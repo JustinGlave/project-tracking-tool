@@ -1,0 +1,11 @@
+.idea/
+__pycache__/
+*.pyc
+*.db
+project_tracker_data.json
+dist/
+build/
+*.spec
+PTT Normal.jpg
+PTT Transparent.ico
+PTT Transparent.jpg
