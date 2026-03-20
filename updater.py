@@ -58,8 +58,8 @@ class UpdateInfo:
 
 
 def _parse_version(tag: str) -> tuple[int, ...]:
-    """Convert 'v1.2.3' or '1.2.3' to (1, 2, 3) for comparison."""
-    cleaned = tag.lstrip("v").strip()
+    """Convert 'v1.2.3', 'V1.2.3', or '1.2.3' to (1, 2, 3) for comparison."""
+    cleaned = tag.lstrip("vV").strip()
     try:
         return tuple(int(part) for part in cleaned.split("."))
     except ValueError:
@@ -100,7 +100,7 @@ def check_for_update() -> Optional[UpdateInfo]:
 
         return UpdateInfo(
             current_version = __version__,
-            latest_version  = latest_tag.lstrip("v"),
+            latest_version  = latest_tag.lstrip("vV"),
             download_url    = exe_asset["browser_download_url"],
             release_notes   = data.get("body", "").strip(),
         )
