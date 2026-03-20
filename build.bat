@@ -20,6 +20,7 @@ pyinstaller ^
     --hidden-import=openpyxl ^
     --hidden-import=openpyxl.cell._writer ^
     --collect-submodules=openpyxl ^
+    --runtime-tmpdir=. ^
     project_tracker_gui.py
 
 if errorlevel 1 (
