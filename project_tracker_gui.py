@@ -524,7 +524,8 @@ class MainWindow(QMainWindow):
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
 
-        self.setWindowTitle("Project Tracking Tool")
+        from version import __version__
+        self.setWindowTitle(f"Project Tracking Tool v{__version__}")
         self.resize(1460, 860)
         self.setMinimumSize(1180, 700)
 
@@ -838,6 +839,102 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_menu_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
+
+        # ── Help menu ──────────────────────────────────────────────────────────
+        help_menu = self.menuBar().addMenu("Help")
+
+        version_history_action = QAction("Version History && Recent Updates", self)
+        version_history_action.triggered.connect(self._show_version_history)
+        help_menu.addAction(version_history_action)
+
+        help_menu.addSeparator()
+
+        about_action = QAction("About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+    def _show_version_history(self) -> None:
+        """Fetch all releases from GitHub and display them in a scrollable dialog."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Version History & Recent Updates")
+        dialog.setModal(True)
+        dialog.resize(560, 480)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        header = QLabel("Fetching release history from GitHub…")
+        header.setObjectName("SectionTitle")
+        layout.addWidget(header)
+
+        text_area = QPlainTextEdit()
+        text_area.setReadOnly(True)
+        text_area.setObjectName("ReadOnlyNotes")
+        layout.addWidget(text_area, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(dialog.accept)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        dialog.show()
+        QApplication.processEvents()
+
+        # Fetch releases in-place (dialog is already visible)
+        from updater import GITHUB_OWNER, GITHUB_REPO
+        try:
+            import urllib.request, json as _json
+            url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "ProjectTrackingTool"},
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                releases = _json.loads(resp.read().decode())
+
+            if not releases:
+                text_area.setPlainText("No releases found on GitHub.")
+                header.setText("Version History")
+                return
+
+            lines = []
+            for rel in releases:
+                tag   = rel.get("tag_name", "").lstrip("vV")
+                name  = rel.get("name", tag)
+                date  = rel.get("published_at", "")[:10]
+                notes = rel.get("body", "").strip() or "No release notes."
+                lines.append(f"v{tag} — {name}  ({date})")
+                lines.append("─" * 48)
+                lines.append(notes)
+                lines.append("")
+
+            text_area.setPlainText("\n".join(lines))
+            header.setText(f"Version History  ({len(releases)} release{'s' if len(releases) != 1 else ''})")
+
+        except Exception as exc:
+            text_area.setPlainText(
+                f"Could not fetch release history.\n\nError: {exc}\n\n"
+                "You can view the full history at:\n"
+                f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+            )
+            header.setText("Version History")
+
+        dialog.exec()
+
+    def _show_about(self) -> None:
+        from version import __version__
+        QMessageBox.information(
+            self,
+            "About Project Tracking Tool",
+            f"Project Tracking Tool\n"
+            f"Version {__version__}\n\n"
+            f"Built for the ATS team.\n"
+            f"© 2026 Justin Glave",
+        )
 
     def _build_shortcuts(self) -> None:
         delete_shortcut = QAction("Delete task", self)

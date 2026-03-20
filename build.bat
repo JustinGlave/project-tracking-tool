@@ -17,6 +17,9 @@ pyinstaller ^
     --name=ProjectTrackingTool ^
     --add-data="PTT_Transparent.png;." ^
     --add-data="PTT_Normal.ico;." ^
+    --hidden-import=openpyxl ^
+    --hidden-import=openpyxl.cell._writer ^
+    --collect-submodules=openpyxl ^
     project_tracker_gui.py
 
 if errorlevel 1 (
