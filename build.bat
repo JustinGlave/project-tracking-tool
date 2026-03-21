@@ -1,6 +1,6 @@
 @echo off
 :: ============================================================
-:: build.bat — builds ProjectTrackingTool.exe
+:: build.bat — builds ProjectTrackingTool
 :: Run this from the project folder:  build.bat
 :: Requires PyInstaller:  pip install pyinstaller
 :: ============================================================
@@ -11,7 +11,7 @@ for /f "tokens=3 delims= " %%v in ('findstr "__version__" version.py') do set VE
 echo Building Project Tracking Tool v%VERSION%...
 
 pyinstaller ^
-    --onefile ^
+    --onedir ^
     --windowed ^
     --icon=PTT_Normal.ico ^
     --name=ProjectTrackingTool ^
@@ -33,14 +33,18 @@ if errorlevel 1 (
 )
 
 echo.
-echo Build complete: dist\ProjectTrackingTool.exe
+echo Build complete: dist\ProjectTrackingTool\ProjectTrackingTool.exe
 echo Version: %VERSION%
 echo.
+echo Zipping for GitHub release...
+powershell -Command "Compress-Archive -Path 'dist\ProjectTrackingTool\*' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force"
+echo.
 echo Next steps:
-echo   1. Test dist\ProjectTrackingTool.exe
+echo   1. Test dist\ProjectTrackingTool\ProjectTrackingTool.exe
 echo   2. Go to GitHub ^> Releases ^> Draft new release
 echo   3. Tag: v%VERSION%
-echo   4. Upload: dist\ProjectTrackingTool.exe
+echo   4. Upload: dist\ProjectTrackingTool.zip
 echo   5. Publish release
 echo.
 pause
+

@@ -88,14 +88,14 @@ def check_for_update() -> Optional[UpdateInfo]:
         if _parse_version(latest_tag) <= _parse_version(__version__):
             return None  # already up to date
 
-        # Find the .exe asset
+        # Find the .zip asset
         assets = data.get("assets", [])
         exe_asset = next(
-            (a for a in assets if a.get("name", "").lower().endswith(".exe")),
+            (a for a in assets if a.get("name", "").lower().endswith(".zip")),
             None,
         )
         if exe_asset is None:
-            logger.warning("New release %s found but no .exe asset attached.", latest_tag)
+            logger.warning("New release %s found but no .zip asset attached.", latest_tag)
             return None
 
         return UpdateInfo(
@@ -115,7 +115,7 @@ def check_for_update() -> Optional[UpdateInfo]:
 
 def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     """
-    Download the new exe and schedule a self-replace on Windows.
+    Download the new zip, extract it over the current install, and restart.
 
     progress_callback(bytes_done, total_bytes) is called during download
     so the GUI can show a progress bar. Pass None to skip.
@@ -125,18 +125,16 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     """
     if not getattr(sys, "frozen", False):
         raise RuntimeError(
-            "Update can only be applied to a compiled .exe build.\n"
+            "Update can only be applied to a compiled build.\n"
             "You're running from source — pull the latest code from GitHub instead."
         )
 
     current_exe = Path(sys.executable).resolve()
+    install_dir = current_exe.parent
 
-    # Download to a temp file in the same directory so the rename is on the
-    # same filesystem (avoids cross-device move issues on some Windows setups).
-    tmp_fd, tmp_path_str = tempfile.mkstemp(
-        dir=current_exe.parent, suffix=".exe.tmp"
-    )
-    tmp_path = Path(tmp_path_str)
+    # Download zip to system temp
+    tmp_fd, tmp_zip_str = tempfile.mkstemp(suffix=".zip")
+    tmp_zip = Path(tmp_zip_str)
 
     try:
         req = urllib.request.Request(
@@ -146,7 +144,7 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
         with urllib.request.urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             done  = 0
-            chunk = 64 * 1024  # 64 KB chunks
+            chunk = 64 * 1024
             with open(tmp_fd, "wb") as fh:
                 while True:
                     block = resp.read(chunk)
@@ -156,16 +154,25 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
                     done += len(block)
                     if progress_callback:
                         progress_callback(done, total)
+
+        # Verify download is complete
+        if total > 0 and tmp_zip.stat().st_size < total:
+            tmp_zip.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"Download incomplete: got {tmp_zip.stat().st_size} of {total} bytes.\n"
+                "Please try again or download manually from GitHub."
+            )
+
+    except RuntimeError:
+        raise
     except Exception as exc:
-        tmp_path.unlink(missing_ok=True)
+        tmp_zip.unlink(missing_ok=True)
         raise RuntimeError(f"Download failed: {exc}") from exc
 
-    # Write a batch script that:
-    #   1. Waits for this process (by PID) to exit
-    #   2. Renames the temp file over the current exe
-    #   3. Relaunches the updated exe
-    pid     = os.getpid()
-    bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat", dir=current_exe.parent)
+    # Write batch script that waits for this process to exit,
+    # extracts the zip over the install dir, then relaunches.
+    pid = os.getpid()
+    bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
     bat_path = Path(bat_path_str)
     bat_content = f"""@echo off
 :wait
@@ -174,14 +181,14 @@ if not errorlevel 1 (
     timeout /t 1 /nobreak >nul
     goto wait
 )
-move /y "{tmp_path}" "{current_exe}"
+powershell -Command "Expand-Archive -Path '{tmp_zip}' -DestinationPath '{install_dir}' -Force"
+del "{tmp_zip}"
 start "" "{current_exe}"
 del "%~f0"
 """
     with open(bat_fd, "w") as fh:
         fh.write(bat_content)
 
-    # Launch the bat hidden, then exit this process.
     subprocess.Popen(
         ["cmd.exe", "/c", str(bat_path)],
         creationflags=subprocess.CREATE_NO_WINDOW,
