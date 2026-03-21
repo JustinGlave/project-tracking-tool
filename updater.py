@@ -176,46 +176,24 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     bat_path = Path(bat_path_str)
     exe_str = str(current_exe)
     zip_str = str(tmp_zip)
-    log_str = str(Path(tempfile.gettempdir()) / "ptt_update_log.txt")
     bat_content = f"""@echo off
-echo Update started > "{log_str}"
 :wait
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
 if not errorlevel 1 (
     timeout /t 1 /nobreak >nul
     goto wait
 )
-echo Process exited >> "{log_str}"
-powershell -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}'); $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1; if ($entry) {{ [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true); 'Extracted OK' | Out-File '{log_str}' -Append }} else {{ 'Entry not found' | Out-File '{log_str}' -Append }}; $zip.Dispose()"
-echo Extraction done >> "{log_str}"
+powershell -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}'); $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1; if ($entry) {{ [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true) }}; $zip.Dispose()"
 del "{zip_str}"
-echo Starting app >> "{log_str}"
 start "" "{exe_str}"
-echo Done >> "{log_str}"
 del "%~f0"
 """
     with open(bat_fd, "w") as fh:
         fh.write(bat_content)
 
-    # Write debug log before launching
-    debug_log = Path(tempfile.gettempdir()) / "ptt_debug.txt"
-    with open(debug_log, "w") as f:
-        f.write(f"bat_path: {bat_path}\n")
-        f.write(f"bat_exists: {bat_path.exists()}\n")
-        f.write(f"exe_str: {exe_str}\n")
-        f.write(f"zip_str: {zip_str}\n")
-        f.write(f"bat_content:\n{bat_content}\n")
-
-    try:
-        result = subprocess.Popen(
-            ["cmd.exe", "/c", str(bat_path)],
-            creationflags=0,
-            close_fds=True,
-        )
-        with open(debug_log, "a") as f:
-            f.write(f"Popen success, PID: {result.pid}\n")
-    except Exception as exc:
-        with open(debug_log, "a") as f:
-            f.write(f"Popen FAILED: {exc}\n")
-
+    subprocess.Popen(
+        ["cmd.exe", "/c", str(bat_path)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        close_fds=True,
+    )
     sys.exit(0)
