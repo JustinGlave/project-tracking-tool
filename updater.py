@@ -185,8 +185,13 @@ while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
     Start-Sleep -Milliseconds 500
 }}
 
-# Extract update using .NET ZipFile (much faster than Expand-Archive)
-[System.IO.Compression.ZipFile]::ExtractToDirectory('{zip_str}', '{dir_str}', $true)
+# Extract just the exe from the zip and overwrite current exe
+$zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}')
+$entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1
+if ($entry) {{
+    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true)
+}}
+$zip.Dispose()
 Remove-Item -Path '{zip_str}' -Force
 
 # Relaunch

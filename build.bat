@@ -36,8 +36,8 @@ echo.
 echo Build complete: dist\ProjectTrackingTool\ProjectTrackingTool.exe
 echo Version: %VERSION%
 echo.
-echo Zipping for GitHub release...
-powershell -Command "Compress-Archive -Path 'dist\ProjectTrackingTool\*' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force"
+echo Zipping exe only for GitHub release...
+powershell -Command "Compress-Archive -Path 'dist\ProjectTrackingTool\ProjectTrackingTool.exe' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force"
 echo.
 echo Next steps:
 echo   1. Test dist\ProjectTrackingTool\ProjectTrackingTool.exe
