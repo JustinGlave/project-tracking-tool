@@ -199,7 +199,7 @@ del "%~f0"
 
     subprocess.Popen(
         ["cmd.exe", "/c", str(bat_path)],
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=0,  # Show the window so we can see what's happening
         close_fds=True,
     )
 
