@@ -172,33 +172,41 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     # Write batch script that waits for this process to exit,
     # extracts the zip over the install dir, then relaunches.
     pid = os.getpid()
-    bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
-    bat_path = Path(bat_path_str)
-    # Use short 8.3-style path to avoid spaces issues in batch
-    exe_str  = str(current_exe)
-    dir_str  = str(install_dir)
-    zip_str  = str(tmp_zip)
-    bat_content = f"""@echo off
-:wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto wait
-)
-timeout /t 2 /nobreak >nul
-powershell -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '{zip_str}' -DestinationPath '{dir_str}' -Force"
-del "{zip_str}"
-timeout /t 2 /nobreak >nul
-start "" "{exe_str}"
-timeout /t 2 /nobreak >nul
-del "%~f0"
+    ps_fd, ps_path_str = tempfile.mkstemp(suffix=".ps1")
+    ps_path = Path(ps_path_str)
+    exe_str = str(current_exe).replace("'", "''")
+    dir_str = str(install_dir).replace("'", "''")
+    zip_str = str(tmp_zip).replace("'", "''")
+    ps_content = f"""
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+# Wait for the app to exit
+while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
+    Start-Sleep -Milliseconds 500
+}}
+
+# Extract update using .NET ZipFile (much faster than Expand-Archive)
+[System.IO.Compression.ZipFile]::ExtractToDirectory('{zip_str}', '{dir_str}', $true)
+Remove-Item -Path '{zip_str}' -Force
+
+# Relaunch
+cmd /c start "" "{exe_str}"
+
+# Clean up this script
+Start-Sleep -Seconds 1
+Remove-Item -Path '{ps_path_str}' -Force
 """
-    with open(bat_fd, "w") as fh:
-        fh.write(bat_content)
+    with open(ps_fd, "w") as fh:
+        fh.write(ps_content)
 
     subprocess.Popen(
-        ["cmd.exe", "/c", str(bat_path)],
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        [
+            "powershell.exe",
+            "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden",
+            "-File", str(ps_path),
+        ],
         close_fds=True,
     )
+
     sys.exit(0)
