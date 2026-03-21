@@ -542,6 +542,9 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self.refresh_project_list()
 
+        # Warn if running from a cloud-synced folder
+        self._check_sync_folder()
+
         # Check for updates in the background so startup is never delayed.
         threading.Thread(target=self._check_update_bg, daemon=True).start()
 
@@ -776,6 +779,24 @@ class MainWindow(QMainWindow):
 
         wrapper_layout.addWidget(self.task_table, 1)
         return wrapper
+
+    def _check_sync_folder(self) -> None:
+        """Warn if the app is running from a cloud-synced folder."""
+        exe_path = str(Path(sys.executable).resolve()).lower()
+        sync_indicators = ["onedrive", "dropbox", "google drive", "box sync", "icloud"]
+        for indicator in sync_indicators:
+            if indicator in exe_path:
+                QMessageBox.warning(
+                    self,
+                    "Cloud Sync Folder Detected",
+                    f"The app is running from a cloud-synced folder:\n\n"
+                    f"{Path(sys.executable).resolve()}\n\n"
+                    f"This can cause auto-updates to fail because {indicator.title()} "
+                    f"locks files during sync.\n\n"
+                    f"Please move the app to a local folder such as:\n"
+                    f"C:\\Tools\\ProjectTrackingTool\\",
+                )
+                break
 
     # ── Auto-update ────────────────────────────────────────────────────────────
 

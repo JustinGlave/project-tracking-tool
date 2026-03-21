@@ -185,16 +185,28 @@ while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
     Start-Sleep -Milliseconds 500
 }}
 
-# Extract just the exe from the zip and overwrite current exe
-$zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}')
-$entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1
-if ($entry) {{
-    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true)
+$log = "$env:TEMP\\ptt_update_log.txt"
+"Update started: $(Get-Date)" | Out-File $log
+
+try {{
+    # Extract just the exe from the zip and overwrite current exe
+    $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}')
+    $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1
+    if ($entry) {{
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true)
+        "Extracted to: {exe_str}" | Out-File $log -Append
+    }} else {{
+        "ERROR: exe not found in zip" | Out-File $log -Append
+    }}
+    $zip.Dispose()
+    Remove-Item -Path '{zip_str}' -Force
+    "Extraction complete: $(Get-Date)" | Out-File $log -Append
+}} catch {{
+    "ERROR: $($_.Exception.Message)" | Out-File $log -Append
 }}
-$zip.Dispose()
-Remove-Item -Path '{zip_str}' -Force
 
 # Relaunch
+"Relaunching: {exe_str}" | Out-File $log -Append
 cmd /c start "" "{exe_str}"
 
 # Clean up this script
