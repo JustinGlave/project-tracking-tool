@@ -172,57 +172,34 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     # Write batch script that waits for this process to exit,
     # extracts the zip over the install dir, then relaunches.
     pid = os.getpid()
-    ps_fd, ps_path_str = tempfile.mkstemp(suffix=".ps1")
-    ps_path = Path(ps_path_str)
-    exe_str = str(current_exe).replace("'", "''")
-    dir_str = str(install_dir).replace("'", "''")
-    zip_str = str(tmp_zip).replace("'", "''")
-    ps_content = f"""
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-# Wait for the app to exit
-while (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{
-    Start-Sleep -Milliseconds 500
-}}
-
-$log = "$env:TEMP\\ptt_update_log.txt"
-"Update started: $(Get-Date)" | Out-File $log
-
-try {{
-    # Extract just the exe from the zip and overwrite current exe
-    $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}')
-    $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1
-    if ($entry) {{
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true)
-        "Extracted to: {exe_str}" | Out-File $log -Append
-    }} else {{
-        "ERROR: exe not found in zip" | Out-File $log -Append
-    }}
-    $zip.Dispose()
-    Remove-Item -Path '{zip_str}' -Force
-    "Extraction complete: $(Get-Date)" | Out-File $log -Append
-}} catch {{
-    "ERROR: $($_.Exception.Message)" | Out-File $log -Append
-}}
-
-# Relaunch
-"Relaunching: {exe_str}" | Out-File $log -Append
-cmd /c start "" "{exe_str}"
-
-# Clean up this script
-Start-Sleep -Seconds 1
-Remove-Item -Path '{ps_path_str}' -Force
+    bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
+    bat_path = Path(bat_path_str)
+    exe_str = str(current_exe)
+    zip_str = str(tmp_zip)
+    log_str = str(Path(tempfile.gettempdir()) / "ptt_update_log.txt")
+    bat_content = f"""@echo off
+echo Update started > "{log_str}"
+:wait
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto wait
+)
+echo Process exited >> "{log_str}"
+powershell -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}'); $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1; if ($entry) {{ [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true); 'Extracted OK' | Out-File '{log_str}' -Append }} else {{ 'Entry not found' | Out-File '{log_str}' -Append }}; $zip.Dispose()"
+echo Extraction done >> "{log_str}"
+del "{zip_str}"
+echo Starting app >> "{log_str}"
+start "" "{exe_str}"
+echo Done >> "{log_str}"
+del "%~f0"
 """
-    with open(ps_fd, "w") as fh:
-        fh.write(ps_content)
+    with open(bat_fd, "w") as fh:
+        fh.write(bat_content)
 
     subprocess.Popen(
-        [
-            "powershell.exe",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-File", str(ps_path),
-        ],
+        ["cmd.exe", "/c", str(bat_path)],
+        creationflags=subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
 
