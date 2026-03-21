@@ -197,10 +197,25 @@ del "%~f0"
     with open(bat_fd, "w") as fh:
         fh.write(bat_content)
 
-    subprocess.Popen(
-        ["cmd.exe", "/c", str(bat_path)],
-        creationflags=0,  # Show the window so we can see what's happening
-        close_fds=True,
-    )
+    # Write debug log before launching
+    debug_log = Path(tempfile.gettempdir()) / "ptt_debug.txt"
+    with open(debug_log, "w") as f:
+        f.write(f"bat_path: {bat_path}\n")
+        f.write(f"bat_exists: {bat_path.exists()}\n")
+        f.write(f"exe_str: {exe_str}\n")
+        f.write(f"zip_str: {zip_str}\n")
+        f.write(f"bat_content:\n{bat_content}\n")
+
+    try:
+        result = subprocess.Popen(
+            ["cmd.exe", "/c", str(bat_path)],
+            creationflags=0,
+            close_fds=True,
+        )
+        with open(debug_log, "a") as f:
+            f.write(f"Popen success, PID: {result.pid}\n")
+    except Exception as exc:
+        with open(debug_log, "a") as f:
+            f.write(f"Popen FAILED: {exc}\n")
 
     sys.exit(0)
