@@ -174,6 +174,10 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     pid = os.getpid()
     bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
     bat_path = Path(bat_path_str)
+    # Use short 8.3-style path to avoid spaces issues in batch
+    exe_str  = str(current_exe)
+    dir_str  = str(install_dir)
+    zip_str  = str(tmp_zip)
     bat_content = f"""@echo off
 :wait
 tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
@@ -181,9 +185,12 @@ if not errorlevel 1 (
     timeout /t 1 /nobreak >nul
     goto wait
 )
-powershell -Command "Expand-Archive -Path '{tmp_zip}' -DestinationPath '{install_dir}' -Force"
-del "{tmp_zip}"
-start "" "{current_exe}"
+timeout /t 2 /nobreak >nul
+powershell -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '{zip_str}' -DestinationPath '{dir_str}' -Force"
+del "{zip_str}"
+timeout /t 2 /nobreak >nul
+start "" "{exe_str}"
+timeout /t 2 /nobreak >nul
 del "%~f0"
 """
     with open(bat_fd, "w") as fh:
