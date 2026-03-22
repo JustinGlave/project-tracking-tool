@@ -130,7 +130,6 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
         )
 
     current_exe = Path(sys.executable).resolve()
-    install_dir = current_exe.parent
 
     # Download zip to system temp
     tmp_fd, tmp_zip_str = tempfile.mkstemp(suffix=".zip")
