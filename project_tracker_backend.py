@@ -26,6 +26,17 @@ class ProjectRecord:
     liquid_damages: str = ""
     warranty_period: str = ""
     notes: str = ""
+    # Fields populated from Odin assignment email
+    booked_date: str = ""
+    group_ops_manager: str = ""
+    group_ops_supervisor: str = ""
+    job_subtype: str = ""
+    owner: str = ""
+    contracted_with: str = ""
+    general_contractor: str = ""
+    contract_value: str = ""
+    job_docs: str = ""
+    div25_url: str = ""
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -39,6 +50,39 @@ class TaskRecord:
     sort_order: int = 0
     completed_date: Optional[str] = None
     is_complete: bool = False
+    notes: str = ""
+
+
+@dataclass(slots=True)
+class NoteRecord:
+    id: Optional[int] = None
+    project_id: Optional[int] = None
+    note_number: int = 0
+    date: str = ""
+    content: str = ""
+    status: str = "Open"          # "Open" or "Closed"
+    closeout_comment: str = ""
+
+
+@dataclass(slots=True)
+class ChangeOrderRecord:
+    id: Optional[int] = None
+    project_id: Optional[int] = None
+    cop_number: str = ""
+    reference: str = ""
+    description: str = ""
+    creation_date: str = ""
+    ats_price: str = ""
+    ats_direct_cost: str = ""
+    ats_status: str = "Pending"       # Pending / Accepted / Rejected
+    booked_in_portal: str = ""
+    ats_booked_co: str = ""
+    mech_co: str = ""
+    sub_quoted_price: str = ""
+    sub_plug_number: str = ""
+    sub_status: str = "Pending"       # Pending / Accepted / Rejected
+    sub_co_sent: str = ""
+    sub_co_number: str = ""
     notes: str = ""
 
 
@@ -115,37 +159,35 @@ class ProjectTrackerBackend:
             data = self._load_data()
             changed = False
             if "projects" not in data:
-                data["projects"] = []
-                changed = True
+                data["projects"] = []; changed = True
             if "tasks" not in data:
-                data["tasks"] = []
-                changed = True
+                data["tasks"] = []; changed = True
+            if "notes" not in data:
+                data["notes"] = []; changed = True
+            if "change_orders" not in data:
+                data["change_orders"] = []; changed = True
             if "next_project_id" not in data:
-                data["next_project_id"] = self._next_id(data["projects"])
-                changed = True
+                data["next_project_id"] = self._next_id(data["projects"]); changed = True
             if "next_task_id" not in data:
-                data["next_task_id"] = self._next_id(data["tasks"])
-                changed = True
+                data["next_task_id"] = self._next_id(data["tasks"]); changed = True
+            if "next_note_id" not in data:
+                data["next_note_id"] = self._next_id(data.get("notes", [])); changed = True
+            if "next_co_id" not in data:
+                data["next_co_id"] = self._next_id(data.get("change_orders", [])); changed = True
             if changed:
                 self._save_data(data)
             return
 
-        self._save_data(
-            {
-                "projects": [],
-                "tasks": [],
-                "next_project_id": 1,
-                "next_task_id": 1,
-            }
-        )
+        self._save_data({
+            "projects": [], "tasks": [], "notes": [], "change_orders": [],
+            "next_project_id": 1, "next_task_id": 1, "next_note_id": 1, "next_co_id": 1,
+        })
 
     def _load_data(self) -> dict[str, Any]:
         if not self.db_path.exists():
             return {
-                "projects": [],
-                "tasks": [],
-                "next_project_id": 1,
-                "next_task_id": 1,
+                "projects": [], "tasks": [], "notes": [], "change_orders": [],
+                "next_project_id": 1, "next_task_id": 1, "next_note_id": 1, "next_co_id": 1,
             }
         return json.loads(self.db_path.read_text(encoding="utf-8"))
 
@@ -201,6 +243,16 @@ class ProjectTrackerBackend:
             "liquid_damages": project.liquid_damages.strip(),
             "warranty_period": project.warranty_period.strip(),
             "notes": project.notes.strip(),
+            "booked_date": project.booked_date.strip(),
+            "group_ops_manager": project.group_ops_manager.strip(),
+            "group_ops_supervisor": project.group_ops_supervisor.strip(),
+            "job_subtype": project.job_subtype.strip(),
+            "owner": project.owner.strip(),
+            "contracted_with": project.contracted_with.strip(),
+            "general_contractor": project.general_contractor.strip(),
+            "contract_value": project.contract_value.strip(),
+            "job_docs": project.job_docs.strip(),
+            "div25_url": project.div25_url.strip(),
             "created_at": now,
             "updated_at": now,
         }
@@ -223,6 +275,16 @@ class ProjectTrackerBackend:
             "liquid_damages",
             "warranty_period",
             "notes",
+            "booked_date",
+            "group_ops_manager",
+            "group_ops_supervisor",
+            "job_subtype",
+            "owner",
+            "contracted_with",
+            "general_contractor",
+            "contract_value",
+            "job_docs",
+            "div25_url",
         }
         unknown_keys = set(changes) - allowed_fields
         if unknown_keys:
@@ -440,6 +502,181 @@ class ProjectTrackerBackend:
             completed_date=completed_date if completed else None,
         )
 
+    # ---------- note methods ----------
+
+    def add_note(self, project_id: int, content: str, date: str = "",
+                 status: str = "Open", closeout_comment: str = "") -> int:
+        data = self._load_data()
+        if self._find_project_dict(data, project_id) is None:
+            raise ValueError(f"Project {project_id} not found.")
+        new_id = int(data.get("next_note_id", 1))
+        existing = [n for n in data.get("notes", []) if int(n["project_id"]) == project_id]
+        note_number = len(existing) + 1
+        data.setdefault("notes", []).append({
+            "id": new_id, "project_id": project_id,
+            "note_number": note_number, "date": date.strip(),
+            "content": content.strip(), "status": status,
+            "closeout_comment": closeout_comment.strip(),
+        })
+        data["next_note_id"] = new_id + 1
+        self._save_data(data)
+        return new_id
+
+    def update_note(self, note_id: int, **changes: Any) -> None:
+        allowed = {"date", "content", "status", "closeout_comment"}
+        updates = {k: v for k, v in changes.items() if k in allowed}
+        if not updates:
+            return
+        data = self._load_data()
+        note = next((n for n in data.get("notes", []) if int(n["id"]) == note_id), None)
+        if note is None:
+            return
+        for k, v in updates.items():
+            note[k] = v.strip() if isinstance(v, str) else v
+        self._save_data(data)
+
+    def delete_note(self, note_id: int) -> None:
+        data = self._load_data()
+        data["notes"] = [n for n in data.get("notes", []) if int(n["id"]) != note_id]
+        # Re-number remaining notes per project
+        by_project: dict[int, list] = {}
+        for n in data["notes"]:
+            by_project.setdefault(int(n["project_id"]), []).append(n)
+        for notes_list in by_project.values():
+            for i, n in enumerate(notes_list, start=1):
+                n["note_number"] = i
+        self._save_data(data)
+
+    def list_notes(self, project_id: int) -> list[NoteRecord]:
+        data = self._load_data()
+        return [
+            NoteRecord(
+                id=n["id"], project_id=n["project_id"],
+                note_number=n["note_number"], date=n["date"],
+                content=n["content"], status=n["status"],
+                closeout_comment=n.get("closeout_comment", ""),
+            )
+            for n in sorted(data.get("notes", []),
+                            key=lambda x: int(x["note_number"]))
+            if int(n["project_id"]) == project_id
+        ]
+
+    # ---------- change order methods ----------
+
+    def _co_to_dict(self, co: ChangeOrderRecord, project_id: int, new_id: int) -> dict[str, Any]:
+        return {
+            "id": new_id, "project_id": project_id,
+            "cop_number": co.cop_number.strip(),
+            "reference": co.reference.strip(),
+            "description": co.description.strip(),
+            "creation_date": co.creation_date.strip(),
+            "ats_price": co.ats_price.strip(),
+            "ats_direct_cost": co.ats_direct_cost.strip(),
+            "ats_status": co.ats_status,
+            "booked_in_portal": co.booked_in_portal.strip(),
+            "ats_booked_co": co.ats_booked_co.strip(),
+            "mech_co": co.mech_co.strip(),
+            "sub_quoted_price": co.sub_quoted_price.strip(),
+            "sub_plug_number": co.sub_plug_number.strip(),
+            "sub_status": co.sub_status,
+            "sub_co_sent": co.sub_co_sent.strip(),
+            "sub_co_number": co.sub_co_number.strip(),
+            "notes": co.notes.strip(),
+        }
+
+    @staticmethod
+    def _co_from_dict(d: dict[str, Any]) -> ChangeOrderRecord:
+        return ChangeOrderRecord(
+            id=d["id"], project_id=d["project_id"],
+            cop_number=d.get("cop_number", ""),
+            reference=d.get("reference", ""),
+            description=d.get("description", ""),
+            creation_date=d.get("creation_date", ""),
+            ats_price=d.get("ats_price", ""),
+            ats_direct_cost=d.get("ats_direct_cost", ""),
+            ats_status=d.get("ats_status", "Pending"),
+            booked_in_portal=d.get("booked_in_portal", ""),
+            ats_booked_co=d.get("ats_booked_co", ""),
+            mech_co=d.get("mech_co", ""),
+            sub_quoted_price=d.get("sub_quoted_price", ""),
+            sub_plug_number=d.get("sub_plug_number", ""),
+            sub_status=d.get("sub_status", "Pending"),
+            sub_co_sent=d.get("sub_co_sent", ""),
+            sub_co_number=d.get("sub_co_number", ""),
+            notes=d.get("notes", ""),
+        )
+
+    def add_change_order(self, project_id: int, co: ChangeOrderRecord) -> int:
+        data = self._load_data()
+        if self._find_project_dict(data, project_id) is None:
+            raise ValueError(f"Project {project_id} not found.")
+        new_id = int(data.get("next_co_id", 1))
+        data.setdefault("change_orders", []).append(
+            self._co_to_dict(co, project_id, new_id)
+        )
+        data["next_co_id"] = new_id + 1
+        self._save_data(data)
+        return new_id
+
+    def update_change_order(self, co_id: int, co: ChangeOrderRecord) -> None:
+        data = self._load_data()
+        rec = next((c for c in data.get("change_orders", []) if int(c["id"]) == co_id), None)
+        if rec is None:
+            return
+        updated = self._co_to_dict(co, int(rec["project_id"]), co_id)
+        rec.update(updated)
+        self._save_data(data)
+
+    def delete_change_order(self, co_id: int) -> None:
+        data = self._load_data()
+        data["change_orders"] = [c for c in data.get("change_orders", [])
+                                  if int(c["id"]) != co_id]
+        self._save_data(data)
+
+    def list_change_orders(self, project_id: int) -> list[ChangeOrderRecord]:
+        data = self._load_data()
+        return [
+            self._co_from_dict(c)
+            for c in data.get("change_orders", [])
+            if int(c["project_id"]) == project_id
+        ]
+
+    def get_co_summary(self, project_id: int) -> dict[str, Any]:
+        """Return ATS and Sub contract totals for the summary bar."""
+        cos = self.list_change_orders(project_id)
+        project = self.get_project(project_id)
+
+        def _parse(val: str) -> float:
+            try:
+                return float(str(val).replace(",", "").replace("$", "").strip())
+            except (ValueError, TypeError):
+                return 0.0
+
+        ats_base = _parse(project.contract_value) if project else 0.0
+        ats_accepted = sum(_parse(c.ats_price) for c in cos if c.ats_status == "Accepted")
+        ats_pending  = sum(_parse(c.ats_price) for c in cos if c.ats_status == "Pending")
+
+        sub_base     = 0.0  # stored in project if needed
+        sub_accepted = sum(
+            _parse(c.sub_quoted_price) if c.sub_quoted_price else _parse(c.sub_plug_number)
+            for c in cos if c.sub_status == "Accepted"
+        )
+        sub_pending  = sum(
+            _parse(c.sub_quoted_price) if c.sub_quoted_price else _parse(c.sub_plug_number)
+            for c in cos if c.sub_status == "Pending"
+        )
+
+        return {
+            "ats_base":         ats_base,
+            "ats_accepted":     ats_accepted,
+            "ats_pending":      ats_pending,
+            "ats_current":      ats_base + ats_accepted,
+            "sub_base":         sub_base,
+            "sub_accepted":     sub_accepted,
+            "sub_pending":      sub_pending,
+            "sub_current":      sub_base + sub_accepted,
+        }
+
     def get_project_summary(self, project_id: int) -> dict[str, Any]:
         project_record = self.get_project(project_id)
         task_records = self.list_tasks(project_id)
@@ -513,9 +750,9 @@ class ProjectTrackerBackend:
         for imported_item in imported_task_items:
             task_key = imported_item["task_name"].casefold()
             existing_task = existing_tasks.get(task_key)
-            if existing_task:
+            if existing_task and existing_task.id is not None:
                 self.update_task(
-                    int(existing_task.id),
+                    existing_task.id,
                     phase=imported_item["phase"],
                     sort_order=imported_item["sort_order"],
                     completed_date=imported_item["completed_date"],
@@ -541,6 +778,406 @@ class ProjectTrackerBackend:
         }
         output_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return output_file
+
+    def export_project_to_excel(self, project_id: int, export_path: str | Path) -> Path:
+        """Export project info and all tasks to a formatted Excel workbook."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        project = self.get_project(project_id)
+        if not project:
+            raise ValueError(f"Project {project_id} not found.")
+        tasks   = self.list_tasks(project_id)
+        summary = self.get_project_summary(project_id)
+        totals  = summary["totals"]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Project Report"
+
+        dark_blue      = "1E3A5F"
+        mid_blue       = "2D5A8E"
+        light_blue     = "D6E4F0"
+        complete_green = "E8F5E9"
+        white          = "FFFFFF"
+        gray           = "F2F2F2"
+
+        def hfont(size: int = 11, color: str = white) -> Font:
+            return Font(name="Segoe UI", size=size, bold=True, color=color)
+
+        def cfont(bold: bool = False, color: str = "000000") -> Font:
+            return Font(name="Segoe UI", size=10, bold=bold, color=color)
+
+        def solid(hex_color: str) -> PatternFill:
+            return PatternFill("solid", fgColor=hex_color)
+
+        def thin_border() -> Border:
+            s = Side(style="thin", color="CCCCCC")
+            return Border(left=s, right=s, top=s, bottom=s)
+
+        centre = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        left   = Alignment(horizontal="left",   vertical="center", wrap_text=True)
+
+        def _sc(cell: Any, *, fnt: Any = None, fil: Any = None,
+                aln: Any = None, brd: Any = None) -> None:
+            """Style a cell — type: ignore suppresses MergedCell union warnings."""
+            if fnt is not None: cell.font      = fnt  # type: ignore[union-attr]
+            if fil is not None: cell.fill      = fil  # type: ignore[union-attr]
+            if aln is not None: cell.alignment = aln  # type: ignore[union-attr]
+            if brd is not None: cell.border    = brd  # type: ignore[union-attr]
+
+        def _sec(merge_range: str, title_text: str, row_num: int) -> None:
+            """Write a formatted section header row."""
+            ws.merge_cells(merge_range)
+            ws[f"A{row_num}"] = title_text  # type: ignore[index]
+            _sc(ws[f"A{row_num}"], fnt=hfont(10), fil=solid(mid_blue), aln=centre)  # type: ignore[index]
+            ws.row_dimensions[row_num].height = 18
+
+        # Title
+        ws.merge_cells("A1:H1")
+        ws["A1"] = f"Project Report — {project.job_name}"  # type: ignore[index]
+        _sc(ws["A1"], fnt=hfont(14), fil=solid(dark_blue), aln=centre)  # type: ignore[index]
+        ws.row_dimensions[1].height = 28
+
+        # Project info
+        info_fields = [
+            ("Job Name",             project.job_name),
+            ("Job Number",           project.job_number),
+            ("Project Manager",      project.project_manager),
+            ("Sales Engineer",       project.sales_engineer),
+            ("Target Completion",    project.target_completion or "—"),
+            ("Booked Date",          project.booked_date or "—"),
+            ("Contract Value",       f"${float(project.contract_value):,.2f}"
+                                     if project.contract_value else "—"),
+            ("Owner",                project.owner or "—"),
+            ("Contracted With",      project.contracted_with or "—"),
+            ("General Contractor",   project.general_contractor or "—"),
+            ("Group Ops Manager",    project.group_ops_manager or "—"),
+            ("Group Ops Supervisor", project.group_ops_supervisor or "—"),
+            ("Job Sub-Type",         project.job_subtype or "—"),
+            ("Warranty Period",      project.warranty_period or "—"),
+            ("Liquid Damages",       project.liquid_damages or "—"),
+            ("Div25 URL",            project.div25_url or "—"),
+            ("Job Docs",             project.job_docs or "—"),
+            ("Notes",                project.notes or "—"),
+        ]
+
+        row = 2
+        _sec(f"A{row}:H{row}", "PROJECT INFORMATION", row)
+        row += 1
+
+        for i, (lbl, val) in enumerate(info_fields):
+            off = 0 if i % 2 == 0 else 4
+            r   = row + (i // 2)
+            lc  = ws.cell(row=r, column=1 + off, value=lbl)
+            vc  = ws.cell(row=r, column=2 + off, value=val)
+            _sc(lc, fnt=cfont(bold=True), fil=solid(light_blue), aln=left, brd=thin_border())
+            _sc(vc, fnt=cfont(), fil=solid(gray if i % 2 == 0 else white), aln=left, brd=thin_border())
+            ws.merge_cells(f"{vc.column_letter}{r}:{chr(ord(vc.column_letter)+2)}{r}")  # type: ignore[union-attr]
+
+        row += (len(info_fields) + 1) // 2 + 1
+
+        # Summary
+        _sec(f"A{row}:H{row}", "TASK SUMMARY", row)
+        row += 1
+        for i, (sl, sv) in enumerate([
+            ("Total Tasks", totals["tasks"]),
+            ("Completed",   totals["completed"]),
+            ("Pending",     totals["pending"]),
+            ("Progress",    f"{totals['progress_percent']}%"),
+        ]):
+            lc = ws.cell(row=row, column=1 + i * 2, value=sl)
+            vc = ws.cell(row=row, column=2 + i * 2, value=sv)
+            _sc(lc, fnt=cfont(bold=True), fil=solid(light_blue), aln=centre, brd=thin_border())
+            _sc(vc, fnt=cfont(bold=True), fil=solid(gray),        aln=centre, brd=thin_border())
+        row += 2
+
+        # Tasks
+        _sec(f"A{row}:H{row}", "TASKS", row)
+        row += 1
+        for ci, (txt, cw) in enumerate(zip(
+            ["#", "Task Name", "Phase", "Status", "Completed Date", "Notes"],
+            [5, 45, 18, 12, 16, 40],
+        ), start=1):
+            c = ws.cell(row=row, column=ci, value=txt)
+            _sc(c, fnt=hfont(10), fil=solid(dark_blue), aln=centre, brd=thin_border())
+            ws.column_dimensions[c.column_letter].width = cw  # type: ignore[union-attr]
+        row += 1
+
+        for idx, task in enumerate(tasks, start=1):
+            rf = solid(complete_green) if task.is_complete else solid(white)
+            for ci, v in enumerate(
+                [idx, task.task_name, task.phase,
+                 "\u2713 Complete" if task.is_complete else "Pending",
+                 task.completed_date or "", task.notes or ""],
+                start=1,
+            ):
+                c = ws.cell(row=row, column=ci, value=v)
+                _sc(c, fnt=cfont(color="1E4D2B" if task.is_complete else "000000"),
+                    fil=rf, aln=left, brd=thin_border())
+            row += 1
+
+        ws.freeze_panes = f"A{row - len(tasks)}"
+        output_file = Path(export_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # ── Notes tab ─────────────────────────────────────────────────────────
+        notes = self.list_notes(project_id)
+        wn = wb.create_sheet("Job Progress Notes")
+
+        # Header block
+        wn.merge_cells("B1:F1")
+        wn["B1"] = "Job Progress Notes"  # type: ignore[index]
+        _sc(wn["B1"], fnt=Font(name="Segoe UI", size=13, bold=True, color="000000"),  # type: ignore[index]
+            fil=solid("FFFF00"), aln=left)
+        wn.row_dimensions[1].height = 20
+
+        for r, (lbl, val) in enumerate([
+            ("Project Name:", project.job_name),
+            ("Project Number:", project.job_number),
+            ("PM:", project.project_manager),
+        ], start=2):
+            lc = wn.cell(row=r, column=3, value=lbl)
+            vc = wn.cell(row=r, column=4, value=val)
+            _sc(lc, fnt=Font(name="Segoe UI", size=10, bold=True, color="000000"),
+                fil=solid("FFFF00"), aln=left)
+            _sc(vc, fnt=Font(name="Segoe UI", size=10, color="000000"), aln=left)
+            wn.row_dimensions[r].height = 16
+
+        # Column headers
+        note_hdrs = ["Note", "Date", "Note or Comment", "", "", "Status", "Close out Comment"]
+        note_widths = [6, 14, 30, 30, 20, 10, 50]
+        for ci, (h, cw) in enumerate(zip(note_hdrs, note_widths), start=1):
+            c = wn.cell(row=5, column=ci, value=h)
+            _sc(c, fnt=Font(name="Segoe UI", size=10, bold=True, color="000000"),
+                fil=solid("FFFF00"), aln=centre,
+                brd=thin_border())
+            wn.column_dimensions[c.column_letter].width = cw  # type: ignore[union-attr]
+        wn.row_dimensions[5].height = 18
+
+        # Note rows
+        for nr, note in enumerate(notes, start=6):
+            is_open = note.status == "Open"
+            row_bg  = "FFCCCC" if is_open else "CCFFCC"
+            status_color = "FF0000" if is_open else "006400"
+            row_vals: list[Any] = [
+                note.note_number, note.date, note.content,
+                "", "", note.status, note.closeout_comment,
+            ]
+            for ci, v in enumerate(row_vals, start=1):
+                c = wn.cell(row=nr, column=ci, value=v)
+                if ci == 6:  # Status column
+                    _sc(c, fnt=Font(name="Segoe UI", size=10, bold=True, color=status_color),
+                        fil=solid(row_bg), aln=centre, brd=thin_border())
+                else:
+                    _sc(c, fnt=Font(name="Segoe UI", size=10, color="000000"),
+                        fil=solid(row_bg if ci != 3 else white), aln=left, brd=thin_border())
+            # Merge note content across columns C-E
+            wn.merge_cells(f"C{nr}:E{nr}")
+            wn.row_dimensions[nr].height = 30
+
+        wn.freeze_panes = "A6"
+
+        # ── Change Orders tab ─────────────────────────────────────────────────
+        cos = self.list_change_orders(project_id)
+        co_sum = self.get_co_summary(project_id)
+        wco = wb.create_sheet("ATS CO Log")
+
+        # Summary block
+        summary_rows = [
+            ("ATS Base Contract",       f"${co_sum['ats_base']:,.2f}",
+             "Sub Base Contract",        f"${co_sum['sub_base']:,.2f}"),
+            ("Total ATS Accepted CO",   f"${co_sum['ats_accepted']:,.2f}",
+             "Total Accepted Sub CO",   f"${co_sum['sub_accepted']:,.2f}"),
+            ("ATS Pending",             f"${co_sum['ats_pending']:,.2f}",
+             "Sub Pending",             f"${co_sum['sub_pending']:,.2f}"),
+            ("ATS Current Contract",    f"${co_sum['ats_current']:,.2f}",
+             "Sub Current Contract",    f"${co_sum['sub_current']:,.2f}"),
+        ]
+        for r, (l1, v1, l2, v2) in enumerate(summary_rows, start=1):
+            for ci, val in enumerate([l1, v1, "", "", "", "", l2, v2], start=1):
+                c = wco.cell(row=r, column=ci, value=val)
+                is_label = ci in (1, 7)
+                _sc(c, fnt=Font(name="Segoe UI", size=10,
+                                bold=is_label, color="000000"),
+                    fil=solid(light_blue if is_label else white), aln=left)
+
+        # CO column headers — row 6
+        co_headers = [
+            "COP#", "Reference", "Description", "Creation Date",
+            "ATS Price", "ATS Direct Cost", "ATS Status", "Booked in Portal",
+            "ATS Booked CO#", "Mech CO#",
+            "Sub Quoted Price", "Sub Plug #", "Sub Price (Auto)",
+            "Sub Status", "Sub CO Sent", "Sub CO#", "Notes",
+        ]
+        co_widths = [10, 14, 40, 14, 12, 14, 14, 14, 12, 10, 14, 12, 14, 12, 12, 10, 30]
+        for ci, (h, cw) in enumerate(zip(co_headers, co_widths), start=1):
+            c = wco.cell(row=6, column=ci, value=h)
+            _sc(c, fnt=hfont(10), fil=solid(dark_blue), aln=centre, brd=thin_border())
+            wco.column_dimensions[c.column_letter].width = cw  # type: ignore[union-attr]
+
+        # CO data rows
+        for ri, co in enumerate(cos, start=7):
+            sub_price = co.sub_quoted_price if co.sub_quoted_price else co.sub_plug_number
+            status_colors = {"Accepted": "CCFFCC", "Rejected": "FFCCCC", "Pending": "FFFACD"}
+            ats_bg = status_colors.get(co.ats_status, white)
+            sub_bg = status_colors.get(co.sub_status, white)
+            row_vals = [
+                co.cop_number, co.reference, co.description, co.creation_date,
+                co.ats_price, co.ats_direct_cost, co.ats_status, co.booked_in_portal,
+                co.ats_booked_co, co.mech_co,
+                co.sub_quoted_price, co.sub_plug_number, sub_price,
+                co.sub_status, co.sub_co_sent, co.sub_co_number, co.notes,
+            ]
+            for ci, v in enumerate(row_vals, start=1):
+                bg = ats_bg if ci <= 10 else (sub_bg if ci <= 16 else white)
+                c = wco.cell(row=ri, column=ci, value=v)
+                _sc(c, fnt=cfont(), fil=solid(bg), aln=left, brd=thin_border())
+
+        wco.freeze_panes = "A7"
+
+        wb.save(output_file)
+        return output_file
+    # ---------- email import ----------
+
+    def import_project_from_email(
+        self, eml_path: str | Path
+    ) -> tuple[ProjectRecord, bool]:
+        """Parse an Odin assignment .eml file and return a ProjectRecord.
+
+        Returns (record, is_duplicate) where is_duplicate=True means a project
+        with that job number already exists in the database.
+        """
+        import email as _email
+        import html as _html
+        import re as _re
+        from html.parser import HTMLParser as _HTMLParser
+
+        eml_text = Path(eml_path).read_bytes()
+        msg = _email.message_from_bytes(eml_text)
+
+        # Get HTML body
+        html_body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/html":
+                    raw = part.get_payload(decode=True)
+                    if isinstance(raw, bytes):
+                        html_body = raw.decode("utf-8", errors="replace")
+                    break
+        else:
+            payload = msg.get_payload(decode=True)
+            if isinstance(payload, bytes):
+                html_body = payload.decode("utf-8", errors="replace")
+
+        if not html_body:
+            raise ValueError("No HTML content found in the email.")
+
+        # Parse key:value pairs from the HTML table
+        class _TableParser(_HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.data: dict[str, str] = {}
+                self._cells: list[str] = []
+                self._in_td = False
+                self._current = ""
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "tr":
+                    self._cells = []
+                elif tag == "td":
+                    self._in_td = True
+                    self._current = ""
+
+            def handle_endtag(self, tag):
+                if tag == "td":
+                    self._in_td = False
+                    self._cells.append(self._current.strip())
+                elif tag == "tr" and len(self._cells) == 2:
+                    key = self._cells[0].strip()
+                    val = self._cells[1].strip()
+                    if key:
+                        self.data[key] = val
+
+            def handle_data(self, text):
+                if self._in_td:
+                    self._current += text
+
+            def handle_entityref(self, name):
+                if self._in_td:
+                    self._current += _html.unescape(f"&{name};")
+
+            def handle_charref(self, name):
+                if self._in_td:
+                    self._current += _html.unescape(f"&#{name};")
+
+        # Decode quoted-printable encoding
+        import quopri as _quopri
+        decoded = _quopri.decodestring(html_body.encode()).decode("utf-8", errors="replace")
+
+        parser = _TableParser()
+        parser.feed(decoded)
+        d = parser.data
+
+        def get(*keys: str) -> str:
+            for k in keys:
+                val = d.get(k, "").strip()
+                if val:
+                    return val
+            return ""
+
+        # Extract booking notes — strip timestamp prefix if present
+        raw_notes = get("Booking Notes")
+        notes_match = _re.sub(r"^\d+/\d+/\d{4}.*?\n", "", raw_notes).strip()
+
+        record = ProjectRecord(
+            job_name       = get("Job Name"),
+            job_number     = get("Job Number"),
+            project_manager= get("Project Manager"),
+            sales_engineer = get("Sales Person"),
+            booked_date    = get("Booked"),
+            group_ops_manager   = get("Group Operations Manager"),
+            group_ops_supervisor= get("Group Operations Supervisor"),
+            job_subtype    = get("Job Sub-Type"),
+            owner          = get("Owner"),
+            contracted_with= get("Contracted With"),
+            general_contractor  = get("General Contractor"),
+            contract_value = get("Contract Value"),
+            job_docs       = get("Job Docs"),
+            div25_url      = get("Div25 URL"),
+            notes          = notes_match or raw_notes,
+        )
+
+        # Check for duplicate
+        data = self._load_data()
+        is_duplicate = any(
+            str(p.get("job_number", "")).strip() == record.job_number.strip()
+            for p in data["projects"]
+            if record.job_number.strip()
+        )
+
+        return record, is_duplicate
+
+    def update_project_from_email(self, project_id: int, record: ProjectRecord) -> None:
+        """Update an existing project with fields parsed from an email."""
+        self.update_project(
+            project_id,
+            job_name=record.job_name,
+            job_number=record.job_number,
+            project_manager=record.project_manager,
+            sales_engineer=record.sales_engineer,
+            booked_date=record.booked_date,
+            group_ops_manager=record.group_ops_manager,
+            group_ops_supervisor=record.group_ops_supervisor,
+            job_subtype=record.job_subtype,
+            owner=record.owner,
+            contracted_with=record.contracted_with,
+            general_contractor=record.general_contractor,
+            contract_value=record.contract_value,
+            job_docs=record.job_docs,
+            div25_url=record.div25_url,
+            notes=record.notes,
+        )
 
     # ---------- internal helpers ----------
 
@@ -650,6 +1287,16 @@ class ProjectTrackerBackend:
             liquid_damages=project_dict["liquid_damages"],
             warranty_period=project_dict["warranty_period"],
             notes=project_dict["notes"],
+            booked_date=project_dict.get("booked_date", ""),
+            group_ops_manager=project_dict.get("group_ops_manager", ""),
+            group_ops_supervisor=project_dict.get("group_ops_supervisor", ""),
+            job_subtype=project_dict.get("job_subtype", ""),
+            owner=project_dict.get("owner", ""),
+            contracted_with=project_dict.get("contracted_with", ""),
+            general_contractor=project_dict.get("general_contractor", ""),
+            contract_value=project_dict.get("contract_value", ""),
+            job_docs=project_dict.get("job_docs", ""),
+            div25_url=project_dict.get("div25_url", ""),
             created_at=project_dict["created_at"],
             updated_at=project_dict["updated_at"],
         )

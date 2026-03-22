@@ -5,8 +5,8 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from PySide6.QtCore import QDate, Qt, QRectF, Signal
-from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
+from PySide6.QtCore import QDate, Qt, QRectF, Signal, QUrl
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -34,11 +34,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QAbstractItemView,
+    QMenu,
     QProgressDialog,
+    QScrollArea,
     QSizePolicy,
+    QToolTip,
 )
 
-from project_tracker_backend import DEFAULT_TASKS, ProjectRecord, ProjectTrackerBackend, TaskRecord
+from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
 
 PHASES = sorted({item["phase"] for item in DEFAULT_TASKS} | {"General"})
@@ -66,7 +69,7 @@ class ProjectDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Project Details")
         self.setModal(True)
-        self.resize(540, 380)
+        self.resize(580, 620)
 
         self.job_name_edit = QLineEdit(project.job_name if project else "")
         self.job_number_edit = QLineEdit(project.job_number if project else "")
@@ -103,15 +106,37 @@ class ProjectDialog(QDialog):
         self.warranty_edit = QLineEdit(project.warranty_period if project else "")
         self.notes_edit = QPlainTextEdit(project.notes if project else "")
 
+        # Extended fields from Odin email
+        self.booked_date_edit       = QLineEdit(project.booked_date if project else "")
+        self.group_ops_mgr_edit     = QLineEdit(project.group_ops_manager if project else "")
+        self.group_ops_sup_edit     = QLineEdit(project.group_ops_supervisor if project else "")
+        self.job_subtype_edit       = QLineEdit(project.job_subtype if project else "")
+        self.owner_edit             = QLineEdit(project.owner if project else "")
+        self.contracted_with_edit   = QLineEdit(project.contracted_with if project else "")
+        self.general_contractor_edit= QLineEdit(project.general_contractor if project else "")
+        self.contract_value_edit    = QLineEdit(project.contract_value if project else "")
+        self.job_docs_edit          = QLineEdit(project.job_docs if project else "")
+        self.div25_url_edit         = QLineEdit(project.div25_url if project else "")
+
         form_layout = QFormLayout()
-        form_layout.addRow("Job name *", self.job_name_edit)
-        form_layout.addRow("Job number *", self.job_number_edit)
-        form_layout.addRow("Project manager", self.pm_edit)
-        form_layout.addRow("Sales engineer", self.sales_edit)
-        form_layout.addRow("Target completion", completion_row)
-        form_layout.addRow("Liquid damages", self.liquid_damages_edit)
-        form_layout.addRow("Warranty period", self.warranty_edit)
-        form_layout.addRow("Notes", self.notes_edit)
+        form_layout.addRow("Job name *",          self.job_name_edit)
+        form_layout.addRow("Job number *",        self.job_number_edit)
+        form_layout.addRow("Project manager",     self.pm_edit)
+        form_layout.addRow("Sales engineer",      self.sales_edit)
+        form_layout.addRow("Target completion",   completion_row)
+        form_layout.addRow("Liquid damages",      self.liquid_damages_edit)
+        form_layout.addRow("Warranty period",     self.warranty_edit)
+        form_layout.addRow("Booked date",         self.booked_date_edit)
+        form_layout.addRow("Contract value",      self.contract_value_edit)
+        form_layout.addRow("Div25 URL",           self.div25_url_edit)
+        form_layout.addRow("Group ops manager",   self.group_ops_mgr_edit)
+        form_layout.addRow("Group ops supervisor",self.group_ops_sup_edit)
+        form_layout.addRow("Job sub-type",        self.job_subtype_edit)
+        form_layout.addRow("Owner",               self.owner_edit)
+        form_layout.addRow("Contracted with",     self.contracted_with_edit)
+        form_layout.addRow("General contractor",  self.general_contractor_edit)
+        form_layout.addRow("Job docs path",       self.job_docs_edit)
+        form_layout.addRow("Notes",               self.notes_edit)
 
         button_box = QDialogButtonBox()
         button_box.addButton(QDialogButtonBox.StandardButton.Ok)
@@ -137,6 +162,16 @@ class ProjectDialog(QDialog):
             liquid_damages=self.liquid_damages_edit.text().strip(),
             warranty_period=self.warranty_edit.text().strip(),
             notes=self.notes_edit.toPlainText().strip(),
+            booked_date=self.booked_date_edit.text().strip(),
+            group_ops_manager=self.group_ops_mgr_edit.text().strip(),
+            group_ops_supervisor=self.group_ops_sup_edit.text().strip(),
+            job_subtype=self.job_subtype_edit.text().strip(),
+            owner=self.owner_edit.text().strip(),
+            contracted_with=self.contracted_with_edit.text().strip(),
+            general_contractor=self.general_contractor_edit.text().strip(),
+            contract_value=self.contract_value_edit.text().strip(),
+            job_docs=self.job_docs_edit.text().strip(),
+            div25_url=self.div25_url_edit.text().strip(),
         )
 
     def accept(self) -> None:
@@ -214,6 +249,460 @@ class TaskDialog(QDialog):
         super().accept()
 
 
+class NoteDialog(QDialog):
+    """Add or edit a single note."""
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 note: Optional[NoteRecord] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Note" if note else "Add Note")
+        self.setModal(True)
+        self.resize(520, 280)
+
+        from PySide6.QtCore import QDate as _QDate
+        today = _QDate.currentDate().toString("yyyy-MM-dd")
+
+        self.date_edit     = QLineEdit(note.date if note else today)
+        self.content_edit  = QPlainTextEdit(note.content if note else "")
+        self.status_combo  = QComboBox()
+        self.status_combo.addItems(["Open", "Closed"])
+        if note and note.status:
+            self.status_combo.setCurrentText(note.status)
+        self.closeout_edit = QPlainTextEdit(note.closeout_comment if note else "")
+
+        form = QFormLayout()
+        form.addRow("Date",             self.date_edit)
+        form.addRow("Note / Comment",   self.content_edit)
+        form.addRow("Status",           self.status_combo)
+        form.addRow("Closeout Comment", self.closeout_edit)
+
+        btns = QDialogButtonBox()
+        btns.addButton(QDialogButtonBox.StandardButton.Ok)
+        btns.addButton(QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(btns)
+
+    def get_data(self) -> dict:
+        return {
+            "date":              self.date_edit.text().strip(),
+            "content":           self.content_edit.toPlainText().strip(),
+            "status":            self.status_combo.currentText(),
+            "closeout_comment":  self.closeout_edit.toPlainText().strip(),
+        }
+
+    def accept(self) -> None:
+        if not self.content_edit.toPlainText().strip():
+            QMessageBox.warning(self, "Empty note", "Enter a note before saving.")
+            return
+        super().accept()
+
+
+class NotesWindow(QDialog):
+    """Floating notes log for a project — matches the Excel Job Progress Notes layout."""
+
+    def __init__(self, project_id: int, project_name: str,
+                 backend: Any, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.project_id   = project_id
+        self.backend      = backend
+        self.setWindowTitle(f"Job Progress Notes — {project_name}")
+        self.resize(1000, 560)
+        self.setMinimumSize(700, 400)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # Toolbar
+        toolbar = QHBoxLayout()
+        title_lbl = QLabel("Job Progress Notes")
+        title_lbl.setObjectName("SectionTitle")
+        toolbar.addWidget(title_lbl)
+        toolbar.addStretch()
+        add_btn = QPushButton("+ Add Note")
+        add_btn.setFixedWidth(110)
+        add_btn.clicked.connect(self._add_note)
+        toolbar.addWidget(add_btn)
+        layout.addLayout(toolbar)
+
+        # Table
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["#", "Date", "Note or Comment", "Status", "Closeout Comment"]
+        )
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.setAlternatingRowColors(False)
+        self.table.doubleClicked.connect(self._edit_selected)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table, 1)
+
+        # Bottom buttons
+        btn_row = QHBoxLayout()
+        edit_btn   = QPushButton("Edit")
+        edit_btn.setFixedWidth(90)
+        edit_btn.clicked.connect(self._edit_selected)
+        del_btn    = QPushButton("Delete")
+        del_btn.setFixedWidth(90)
+        del_btn.clicked.connect(self._delete_selected)
+        close_btn  = QPushButton("Close")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(edit_btn)
+        btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        notes = self.backend.list_notes(self.project_id)
+        self.table.setRowCount(len(notes))
+        for r, note in enumerate(notes):
+            is_open = note.status == "Open"
+            bg = QColor("#FFCCCC") if is_open else QColor("#CCFFCC")
+            status_color = QColor("#CC0000") if is_open else QColor("#006400")
+
+            items = [
+                QTableWidgetItem(str(note.note_number)),
+                QTableWidgetItem(note.date),
+                QTableWidgetItem(note.content),
+                QTableWidgetItem(note.status),
+                QTableWidgetItem(note.closeout_comment),
+            ]
+            for c, item in enumerate(items):
+                item.setBackground(bg)
+                if c == 3:
+                    item.setForeground(status_color)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # Show full text as tooltip for content and closeout columns
+                if c == 2 and note.content:
+                    item.setToolTip(note.content)
+                if c == 4 and note.closeout_comment:
+                    item.setToolTip(note.closeout_comment)
+                item.setData(Qt.ItemDataRole.UserRole, note.id)
+                self.table.setItem(r, c, item)
+
+    def _selected_id(self) -> Optional[int]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _add_note(self) -> None:
+        dlg = NoteDialog(self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        d = dlg.get_data()
+        self.backend.add_note(self.project_id, d["content"], d["date"],
+                              d["status"], d["closeout_comment"])
+        self._refresh()
+
+    def _edit_selected(self) -> None:
+        note_id = self._selected_id()
+        if note_id is None:
+            return
+        note = next((n for n in self.backend.list_notes(self.project_id)
+                     if n.id == note_id), None)
+        if note is None:
+            return
+        dlg = NoteDialog(self, note)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self.backend.update_note(note_id, **dlg.get_data())
+        self._refresh()
+
+    def _delete_selected(self) -> None:
+        note_id = self._selected_id()
+        if note_id is None:
+            return
+        ans = QMessageBox.question(self, "Delete note", "Delete this note?",
+                                   QMessageBox.StandardButton.Yes |
+                                   QMessageBox.StandardButton.No,
+                                   QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self.backend.delete_note(note_id)
+            self._refresh()
+
+
+class ChangeOrderDialog(QDialog):
+    """Add or edit a single Change Order."""
+
+    def __init__(self, parent: Optional[QWidget] = None,
+                 co: Optional[ChangeOrderRecord] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Change Order" if co else "Add Change Order")
+        self.setModal(True)
+        self.resize(600, 520)
+
+        def _le(val: str = "") -> QLineEdit:
+            return QLineEdit(val)
+
+        def _combo(options: list[str], current: str = "") -> QComboBox:
+            cb = QComboBox()
+            cb.addItems(options)
+            if current:
+                cb.setCurrentText(current)
+            return cb
+
+        status_opts = ["Pending", "Accepted", "Rejected"]
+
+        self.cop_number      = _le(co.cop_number      if co else "")
+        self.reference       = _le(co.reference       if co else "")
+        self.description     = _le(co.description     if co else "")
+        self.creation_date   = _le(co.creation_date   if co else "")
+        self.ats_price       = _le(co.ats_price       if co else "")
+        self.ats_direct_cost = _le(co.ats_direct_cost if co else "")
+        self.ats_status      = _combo(status_opts, co.ats_status if co else "Pending")
+        self.booked_in_portal= _le(co.booked_in_portal if co else "")
+        self.ats_booked_co   = _le(co.ats_booked_co  if co else "")
+        self.mech_co         = _le(co.mech_co         if co else "")
+        self.sub_quoted_price= _le(co.sub_quoted_price if co else "")
+        self.sub_plug_number = _le(co.sub_plug_number if co else "")
+        self.sub_status      = _combo(status_opts, co.sub_status if co else "Pending")
+        self.sub_co_sent     = _le(co.sub_co_sent     if co else "")
+        self.sub_co_number   = _le(co.sub_co_number   if co else "")
+        self.notes_edit      = QPlainTextEdit(co.notes if co else "")
+        self.notes_edit.setFixedHeight(60)
+
+        form = QFormLayout()
+        form.addRow("COP #",             self.cop_number)
+        form.addRow("Reference",          self.reference)
+        form.addRow("Description",        self.description)
+        form.addRow("Creation Date",      self.creation_date)
+        form.addRow("ATS Price",          self.ats_price)
+        form.addRow("ATS Direct Cost",    self.ats_direct_cost)
+        form.addRow("ATS Status",         self.ats_status)
+        form.addRow("Booked in Portal",   self.booked_in_portal)
+        form.addRow("ATS Booked CO#",     self.ats_booked_co)
+        form.addRow("Mech CO#",           self.mech_co)
+        form.addRow("Sub Quoted Price",   self.sub_quoted_price)
+        form.addRow("Sub Plug #",         self.sub_plug_number)
+        form.addRow("Sub Status",         self.sub_status)
+        form.addRow("Sub CO Sent",        self.sub_co_sent)
+        form.addRow("Sub CO#",            self.sub_co_number)
+        form.addRow("Notes",              self.notes_edit)
+
+        btns = QDialogButtonBox()
+        btns.addButton(QDialogButtonBox.StandardButton.Ok)
+        btns.addButton(QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner.setLayout(form)
+        scroll.setWidget(inner)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(scroll, 1)
+        lay.addWidget(btns)
+
+    def get_data(self) -> ChangeOrderRecord:
+        return ChangeOrderRecord(
+            cop_number      = self.cop_number.text().strip(),
+            reference       = self.reference.text().strip(),
+            description     = self.description.text().strip(),
+            creation_date   = self.creation_date.text().strip(),
+            ats_price       = self.ats_price.text().strip(),
+            ats_direct_cost = self.ats_direct_cost.text().strip(),
+            ats_status      = self.ats_status.currentText(),
+            booked_in_portal= self.booked_in_portal.text().strip(),
+            ats_booked_co   = self.ats_booked_co.text().strip(),
+            mech_co         = self.mech_co.text().strip(),
+            sub_quoted_price= self.sub_quoted_price.text().strip(),
+            sub_plug_number = self.sub_plug_number.text().strip(),
+            sub_status      = self.sub_status.currentText(),
+            sub_co_sent     = self.sub_co_sent.text().strip(),
+            sub_co_number   = self.sub_co_number.text().strip(),
+            notes           = self.notes_edit.toPlainText().strip(),
+        )
+
+
+class ChangeOrderWindow(QDialog):
+    """Floating Change Order tracker window."""
+
+    # Status background colors
+    _STATUS_BG = {
+        "Accepted": QColor("#CCFFCC"),
+        "Rejected": QColor("#FFCCCC"),
+        "Pending":  QColor("#FFFACD"),
+    }
+
+    def __init__(self, project_id: int, project_name: str,
+                 backend: Any, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.project_id = project_id
+        self.backend    = backend
+        self.setWindowTitle(f"Change Order Log — {project_name}")
+        self.resize(1200, 600)
+        self.setMinimumSize(900, 400)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        # ── Summary bar ───────────────────────────────────────────────────────
+        self._summary_bar = QWidget()
+        sb_layout = QHBoxLayout(self._summary_bar)
+        sb_layout.setContentsMargins(0, 0, 0, 0)
+        sb_layout.setSpacing(4)
+
+        self._sum_labels: dict[str, QLabel] = {}
+        for key, caption in [
+            ("ats_base",     "ATS Base"),
+            ("ats_accepted", "ATS Accepted"),
+            ("ats_pending",  "ATS Pending"),
+            ("ats_current",  "ATS Current"),
+            ("sub_accepted", "Sub Accepted"),
+            ("sub_pending",  "Sub Pending"),
+            ("sub_current",  "Sub Current"),
+        ]:
+            box = QFrame()
+            box.setObjectName("StatCard")
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(8, 4, 8, 4)
+            bl.setSpacing(1)
+            cap = QLabel(caption)
+            cap.setObjectName("MetaCaption")
+            val = QLabel("$0")
+            val.setObjectName("StatValue")
+            bl.addWidget(cap)
+            bl.addWidget(val)
+            self._sum_labels[key] = val
+            sb_layout.addWidget(box)
+
+        layout.addWidget(self._summary_bar)
+
+        # ── Toolbar ───────────────────────────────────────────────────────────
+        toolbar = QHBoxLayout()
+        add_btn = QPushButton("+ Add CO")
+        add_btn.setFixedWidth(100)
+        add_btn.clicked.connect(self._add_co)
+        toolbar.addStretch()
+        toolbar.addWidget(add_btn)
+        layout.addLayout(toolbar)
+
+        # ── Table ─────────────────────────────────────────────────────────────
+        headers = [
+            "COP#", "Reference", "Description", "Date",
+            "ATS Price", "Direct Cost", "ATS Status", "Portal",
+            "Booked CO#", "Mech CO#",
+            "Sub Quoted", "Plug #", "Sub Price",
+            "Sub Status", "CO Sent", "Sub CO#", "Notes",
+        ]
+        self.table = QTableWidget(0, len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.doubleClicked.connect(self._edit_selected)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)   # Description
+        hdr.setSectionResizeMode(16, QHeaderView.ResizeMode.Stretch)  # Notes
+        for c in [0,1,3,4,5,6,7,8,9,10,11,12,13,14,15]:
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.table, 1)
+
+        # ── Bottom buttons ────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        edit_btn  = QPushButton("Edit");   edit_btn.setFixedWidth(80);  edit_btn.clicked.connect(self._edit_selected)
+        del_btn   = QPushButton("Delete"); del_btn.setFixedWidth(80);   del_btn.clicked.connect(self._delete_selected)
+        close_btn = QPushButton("Close");  close_btn.setFixedWidth(80); close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(edit_btn); btn_row.addWidget(del_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._refresh()
+
+    def _refresh(self) -> None:
+        cos = self.backend.list_change_orders(self.project_id)
+        summary = self.backend.get_co_summary(self.project_id)
+
+        # Update summary bar
+        for key, lbl in self._sum_labels.items():
+            lbl.setText(f"${summary[key]:,.0f}")
+
+        self.table.setRowCount(len(cos))
+        for r, co in enumerate(cos):
+            sub_price = co.sub_quoted_price if co.sub_quoted_price else co.sub_plug_number
+            ats_bg  = self._STATUS_BG.get(co.ats_status, QColor("#FFFFFF"))
+            sub_bg  = self._STATUS_BG.get(co.sub_status, QColor("#FFFFFF"))
+            row_vals = [
+                co.cop_number, co.reference, co.description, co.creation_date,
+                co.ats_price, co.ats_direct_cost, co.ats_status, co.booked_in_portal,
+                co.ats_booked_co, co.mech_co,
+                co.sub_quoted_price, co.sub_plug_number, sub_price,
+                co.sub_status, co.sub_co_sent, co.sub_co_number, co.notes,
+            ]
+            for c, val in enumerate(row_vals):
+                item = QTableWidgetItem(str(val))
+                bg = ats_bg if c <= 9 else (sub_bg if c <= 15 else QColor("#FFFFFF"))
+                item.setBackground(bg)
+                if val:
+                    item.setToolTip(str(val))
+                item.setData(Qt.ItemDataRole.UserRole, co.id)
+                self.table.setItem(r, c, item)
+
+    def _selected_id(self) -> Optional[int]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _add_co(self) -> None:
+        dlg = ChangeOrderDialog(self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self.backend.add_change_order(self.project_id, dlg.get_data())
+        self._refresh()
+
+    def _edit_selected(self) -> None:
+        co_id = self._selected_id()
+        if co_id is None:
+            return
+        co = next((c for c in self.backend.list_change_orders(self.project_id)
+                   if c.id == co_id), None)
+        if co is None:
+            return
+        dlg = ChangeOrderDialog(self, co)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self.backend.update_change_order(co_id, dlg.get_data())
+        self._refresh()
+
+    def _delete_selected(self) -> None:
+        co_id = self._selected_id()
+        if co_id is None:
+            return
+        ans = QMessageBox.question(self, "Delete CO", "Delete this change order?",
+                                   QMessageBox.StandardButton.Yes |
+                                   QMessageBox.StandardButton.No,
+                                   QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self.backend.delete_change_order(co_id)
+            self._refresh()
+
+
 class StatCard(QFrame):
     def __init__(self, title: str, value: str = "0") -> None:
         super().__init__()
@@ -224,7 +713,8 @@ class StatCard(QFrame):
         self.value_label.setObjectName("StatValue")
 
         card_layout = QVBoxLayout(self)
-        card_layout.setContentsMargins(14, 12, 14, 12)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(2)
         card_layout.addWidget(self.title_label)
         card_layout.addWidget(self.value_label)
 
@@ -238,6 +728,8 @@ class SegmentedProgressBar(QWidget):
         self.setFixedHeight(12)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._segments: list[dict] = []
+        self._rects: list[tuple[int, int, dict]] = []  # (x, width, seg) for hit-testing
+        self.setMouseTracking(True)
 
     def set_segments(self, segments: list[dict]) -> None:
         self._segments = [
@@ -248,7 +740,21 @@ class SegmentedProgressBar(QWidget):
 
     def clear(self) -> None:
         self._segments = []
+        self._rects = []
         self.update()
+
+    def mouseMoveEvent(self, event) -> None:
+        mx = event.position().x()
+        for x, w, seg in self._rects:
+            if x <= mx <= x + w:
+                pct = int(round(seg["done"] / seg["total"] * 100)) if seg["total"] else 0
+                QToolTip.showText(
+                    event.globalPosition().toPoint(),
+                    f"{seg['phase']}\n{seg['done']} / {seg['total']} complete ({pct}%)",
+                    self,
+                )
+                return
+        QToolTip.hideText()
 
     def paintEvent(self, event) -> None:
         if not self._segments:
@@ -271,6 +777,8 @@ class SegmentedProgressBar(QWidget):
             seg_w = max(4, int(round(w * seg["total"] / total_tasks)))
             rects.append((x, seg_w, seg))
             x += seg_w + gap
+
+        self._rects = rects  # save for mouseMoveEvent hit-testing
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -510,6 +1018,40 @@ class ResizeHandle(QFrame):
         self._drag_start_w = None
 
 
+class _VResizeHandle(QFrame):
+    """Horizontal drag strip between the project header and task table.
+    Drag up to grow the header, drag down to shrink it."""
+
+    _MIN_H = 80
+    _MAX_H = 300
+
+    def __init__(self, header: QWidget, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._header = header
+        self._drag_start_y: Optional[float] = None
+        self._drag_start_h: Optional[int] = None
+        self.setFixedHeight(6)
+        self.setObjectName("VResizeHandle")
+        self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_y = event.globalPosition().y()
+            self._drag_start_h = self._header.height()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_start_y is None:
+            return
+        delta = event.globalPosition().y() - self._drag_start_y
+        new_h = int(self._drag_start_h + delta)
+        new_h = max(self._MIN_H, min(self._MAX_H, new_h))
+        self._header.setFixedHeight(new_h)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_start_y = None
+        self._drag_start_h = None
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
@@ -523,11 +1065,13 @@ class MainWindow(QMainWindow):
         self._populating = False
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
+        self._div25_url: str = ""
 
         from version import __version__
         self.setWindowTitle(f"Project Tracking Tool v{__version__}")
         self.resize(1460, 860)
         self.setMinimumSize(1180, 700)
+        self.setAcceptDrops(True)
 
         _icon_path = Path(__file__).with_name("PTT_Normal.ico")
         if _icon_path.exists():
@@ -599,6 +1143,12 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.import_btn)
         panel_layout.addLayout(button_row)
 
+        self.import_email_btn = QPushButton("📧 Import Email")
+        self.import_email_btn.setMinimumWidth(160)
+        self.import_email_btn.setToolTip("Import project from Odin assignment email (.eml)")
+        self.import_email_btn.clicked.connect(self.import_email)
+        panel_layout.addWidget(self.import_email_btn)
+
         self.project_list = QListWidget()
         self.project_list.currentItemChanged.connect(self.on_project_selected)
         panel_layout.addWidget(self.project_list, 1)
@@ -621,10 +1171,15 @@ class MainWindow(QMainWindow):
         panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         main_layout = QVBoxLayout(panel)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(12)
+        main_layout.setSpacing(0)
 
-        main_layout.addWidget(self._build_project_header(), 0)
-        main_layout.addWidget(self._build_task_table(), 10)
+        self._header_widget = self._build_project_header()
+        main_layout.addWidget(self._header_widget, 0)
+
+        v_handle = _VResizeHandle(self._header_widget, panel)
+        main_layout.addWidget(v_handle)
+
+        main_layout.addWidget(self._build_task_table(), 1)
         return panel
 
     def _build_project_header(self) -> QWidget:
@@ -661,13 +1216,24 @@ class MainWindow(QMainWindow):
         self.completion_value = ElidingLabel("—")
         self.liquid_value = ElidingLabel("—")
         self.warranty_value = ElidingLabel("—")
+        self.booked_value = ElidingLabel("—")
+        self.contract_value_value = ElidingLabel("—")
+        # Div25 is a clickable button not a label
+        self.div25_btn = QPushButton("Div25 →")
+        self.div25_btn.setObjectName("Div25Btn")
+        self.div25_btn.setToolTip("Open Div25 project page")
+        self.div25_btn.setFixedWidth(80)
+        self.div25_btn.setEnabled(False)
+        self.div25_btn.clicked.connect(self._open_div25)
+
         meta_pairs: list[tuple[str, ElidingLabel]] = [
-            ("Job #", self.job_number_value),
-            ("PM", self.pm_value),
-            ("SE", self.sales_value),
-            ("Due", self.completion_value),
-            ("LD", self.liquid_value),
-            ("Warranty", self.warranty_value),
+            ("Job #",     self.job_number_value),
+            ("PM",        self.pm_value),
+            ("SE",        self.sales_value),
+            ("Due",       self.completion_value),
+            ("Booked",    self.booked_value),
+            ("Contract",  self.contract_value_value),
+            ("Warranty",  self.warranty_value),
         ]
 
         for meta_caption, val_label in meta_pairs:
@@ -682,6 +1248,14 @@ class MainWindow(QMainWindow):
             col.addWidget(val_label)
             left_layout.addLayout(col, 1)
 
+        # Add Div25 button — no caption, just the button aligned to bottom
+        div25_col = QVBoxLayout()
+        div25_col.setSpacing(0)
+        div25_col.setContentsMargins(0, 0, 0, 0)
+        div25_col.addStretch()
+        div25_col.addWidget(self.div25_btn)
+        left_layout.addLayout(div25_col, 0)
+
         row.addWidget(left_widget, 1)
 
         right_widget = QWidget()
@@ -695,7 +1269,7 @@ class MainWindow(QMainWindow):
         self.pending_card = StatCard("Pending")
         self.progress_card = StatCard("Progress")
         for card in [self.total_tasks_card, self.completed_card, self.pending_card, self.progress_card]:
-            card.setFixedWidth(76)
+            card.setFixedWidth(62)
             right_layout.addWidget(card)
 
         sep2 = QFrame()
@@ -706,9 +1280,15 @@ class MainWindow(QMainWindow):
         self.add_task_btn = QPushButton("Add Task")
         self.add_task_btn.setFixedWidth(110)
         self.add_task_btn.clicked.connect(self.add_task)
-        self.export_btn = QPushButton("Export")
-        self.export_btn.setFixedWidth(76)
-        self.export_btn.clicked.connect(self.export_snapshot)
+
+        # Export button with dropdown menu
+        self.export_btn = QPushButton("Export ▾")
+        self.export_btn.setFixedWidth(90)
+        export_menu = QMenu(self.export_btn)
+        export_menu.addAction("Export to Excel (.xlsx)", self.export_excel)
+        export_menu.addAction("Export Snapshot (.json)", self.export_snapshot)
+        self.export_btn.setMenu(export_menu)
+
         right_layout.addWidget(self.add_task_btn)
         right_layout.addWidget(self.export_btn)
 
@@ -736,6 +1316,19 @@ class MainWindow(QMainWindow):
         title_label = QLabel("Tasks")
         title_label.setObjectName("SectionTitle")
         top_row.addWidget(title_label)
+
+        self.notes_btn = QPushButton("📝 Notes")
+        self.notes_btn.setFixedWidth(100)
+        self.notes_btn.setToolTip("Open job progress notes")
+        self.notes_btn.clicked.connect(self._open_notes)
+        top_row.addWidget(self.notes_btn)
+
+        self.co_btn = QPushButton("📋 Change Orders")
+        self.co_btn.setFixedWidth(140)
+        self.co_btn.setToolTip("Open change order log")
+        self.co_btn.clicked.connect(self._open_change_orders)
+        top_row.addWidget(self.co_btn)
+
         top_row.addStretch(1)
 
         self.phase_filter = QComboBox()
@@ -767,11 +1360,16 @@ class MainWindow(QMainWindow):
 
         header = self.task_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(False)
+        # Default column widths
+        header.resizeSection(1, 300)
+        header.resizeSection(2, 120)
+        header.resizeSection(3, 120)
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._on_header_clicked)
 
@@ -779,6 +1377,28 @@ class MainWindow(QMainWindow):
 
         wrapper_layout.addWidget(self.task_table, 1)
         return wrapper
+
+    def _open_div25(self) -> None:
+        if self._div25_url:
+            QDesktopServices.openUrl(QUrl(self._div25_url))
+
+    def _open_notes(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        name = project.job_name if project else "Project"
+        dlg = NotesWindow(self.current_project_id, name, self.backend, self)
+        dlg.exec()
+
+    def _open_change_orders(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        name = project.job_name if project else "Project"
+        dlg = ChangeOrderWindow(self.current_project_id, name, self.backend, self)
+        dlg.exec()
 
     def _check_sync_folder(self) -> None:
         """Warn if the app is running from a cloud-synced folder."""
@@ -809,7 +1429,7 @@ class MainWindow(QMainWindow):
             self._update_ready.emit()
 
     def _show_update_banner(self) -> None:
-        info: UpdateInfo = getattr(self, "_pending_update_info", None)
+        info: Optional[UpdateInfo] = getattr(self, "_pending_update_info", None)
         if info is None:
             return
         banner = UpdateBanner(info, self)
@@ -1049,6 +1669,13 @@ class MainWindow(QMainWindow):
         self.completion_value.setText(project.target_completion or "—")
         self.liquid_value.setText(project.liquid_damages or "—")
         self.warranty_value.setText(project.warranty_period or "—")
+        self.booked_value.setText(project.booked_date or "—")
+        self.contract_value_value.setText(
+            f"${float(project.contract_value):,.0f}" if project.contract_value else "—"
+        )
+        self._div25_url = project.div25_url or ""
+        self.div25_btn.setEnabled(bool(self._div25_url))
+        self.div25_btn.setToolTip(self._div25_url or "No Div25 URL")
         self.project_notes.setPlainText(project.notes or "")
 
         self.current_tasks = self.backend.list_tasks(self.current_project_id)
@@ -1065,8 +1692,13 @@ class MainWindow(QMainWindow):
             self.completion_value,
             self.liquid_value,
             self.warranty_value,
+            self.booked_value,
+            self.contract_value_value,
         ]:
             value_widget.setText("—")
+        self._div25_url = ""
+        self.div25_btn.setEnabled(False)
+        self.div25_btn.setToolTip("No Div25 URL")
         self.project_notes.clear()
         self.total_tasks_card.set_value("0")
         self.completed_card.set_value("0")
@@ -1179,13 +1811,16 @@ class MainWindow(QMainWindow):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
 
+        task_id = task.id
+        assert task_id is not None
+
         edit_button = QToolButton()
         edit_button.setText("Edit")
-        edit_button.clicked.connect(lambda: self.edit_task(int(task.id)))
+        edit_button.clicked.connect(lambda: self.edit_task(task_id))
 
         delete_button = QToolButton()
         delete_button.setText("Del")
-        delete_button.clicked.connect(lambda: self.delete_task(int(task.id)))
+        delete_button.clicked.connect(lambda: self.delete_task(task_id))
 
         button_layout.addWidget(edit_button)
         button_layout.addWidget(delete_button)
@@ -1201,19 +1836,23 @@ class MainWindow(QMainWindow):
         row_layout.addStretch(1)
         return container
 
+    def _save_new_project(self, record: ProjectRecord, status_msg: str = "") -> bool:
+        """Create a new project from record, refresh list, update status. Returns True on success."""
+        try:
+            new_id = self.backend.create_project(record, include_default_tasks=True)
+        except Exception as exc:
+            QMessageBox.critical(self, "Unable to create project", str(exc))
+            return False
+        self.current_project_id = new_id
+        self.refresh_project_list()
+        self.status_bar.showMessage(status_msg or f"Created project {record.job_name}", 4000)
+        return True
+
     def create_project(self) -> None:
         dialog = ProjectDialog(self)
         if dialog.exec() != int(QDialog.DialogCode.Accepted):
             return
-        record = dialog.get_data()
-        try:
-            new_project_id = self.backend.create_project(record, include_default_tasks=True)
-        except Exception as exc:
-            QMessageBox.critical(self, "Unable to create project", str(exc))
-            return
-        self.current_project_id = new_project_id
-        self.refresh_project_list()
-        self.status_bar.showMessage(f"Created project {record.job_name}", 4000)
+        self._save_new_project(dialog.get_data())
 
     def edit_current_project(self) -> None:
         if self.current_project_id is None:
@@ -1237,6 +1876,16 @@ class MainWindow(QMainWindow):
                 liquid_damages=record.liquid_damages,
                 warranty_period=record.warranty_period,
                 notes=record.notes,
+                booked_date=record.booked_date,
+                group_ops_manager=record.group_ops_manager,
+                group_ops_supervisor=record.group_ops_supervisor,
+                job_subtype=record.job_subtype,
+                owner=record.owner,
+                contracted_with=record.contracted_with,
+                general_contractor=record.general_contractor,
+                contract_value=record.contract_value,
+                job_docs=record.job_docs,
+                div25_url=record.div25_url,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Unable to update project", str(exc))
@@ -1266,6 +1915,84 @@ class MainWindow(QMainWindow):
         self.refresh_project_list()
         self.status_bar.showMessage("Project deleted", 4000)
 
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if any(u.toLocalFile().lower().endswith(".eml") for u in urls):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith(".eml"):
+                self._process_email_import(path)
+                return
+
+    def import_email(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Odin Assignment Email",
+            "",
+            "Email Files (*.eml)",
+        )
+        if file_path:
+            self._process_email_import(file_path)
+
+    def _process_email_import(self, eml_path: str) -> None:
+        try:
+            record, is_duplicate = self.backend.import_project_from_email(eml_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Email import failed", str(exc))
+            return
+
+        if not record.job_name and not record.job_number:
+            QMessageBox.warning(
+                self, "Import failed",
+                "Could not extract project data from this email.\n\n"
+                "Make sure it is an Odin assignment email."
+            )
+            return
+
+        if is_duplicate:
+            # Find the existing project id
+            existing = next(
+                (p for p in self.backend.list_projects()
+                 if p.job_number.strip() == record.job_number.strip()),
+                None,
+            )
+            answer = QMessageBox.question(
+                self,
+                "Project already exists",
+                f"Job #{record.job_number} — '{record.job_name}' already exists.\n\n"
+                f"Do you want to update the existing project with data from this email?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer == QMessageBox.StandardButton.Yes and existing and existing.id is not None:
+                try:
+                    self.backend.update_project_from_email(existing.id, record)
+                except Exception as exc:
+                    QMessageBox.critical(self, "Update failed", str(exc))
+                    return
+                self.current_project_id = existing.id
+                self.refresh_project_list()
+                self.status_bar.showMessage(
+                    f"Updated project {record.job_number} from email", 5000
+                )
+            return
+
+        # New project — open dialog pre-filled for review before saving
+        dialog = ProjectDialog(self, record)
+        dialog.setWindowTitle(f"Review Import — {record.job_name}")
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self._save_new_project(
+            dialog.get_data(),
+            f"Imported project {record.job_number} from email",
+        )
+
     def import_workbook(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Import workbook", "",
@@ -1289,6 +2016,24 @@ class MainWindow(QMainWindow):
         self.current_project_id = imported_project_id
         self.refresh_project_list()
         self.status_bar.showMessage(f"Imported workbook: {Path(file_path).name}", 5000)
+
+    def export_excel(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        default_name = f"{project.job_number or 'project'}_report.xlsx" if project else "project_report.xlsx"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export to Excel", default_name, "Excel Files (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            output_path = self.backend.export_project_to_excel(self.current_project_id, file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.status_bar.showMessage(f"Exported Excel report to {output_path}", 5000)
 
     def export_snapshot(self) -> None:
         if self.current_project_id is None:
@@ -1427,10 +2172,10 @@ def apply_dark_theme(app: QApplication) -> None:
         }
         QLabel#StatTitle {
             color: #9eadc5;
-            font-size: 8pt;
+            font-size: 7pt;
         }
         QLabel#StatValue {
-            font-size: 13pt;
+            font-size: 10pt;
             font-weight: 700;
         }
         QPushButton, QToolButton {
@@ -1515,6 +2260,31 @@ def apply_dark_theme(app: QApplication) -> None:
         }
         QFrame#ResizeHandle:hover {
             background: #487cff;
+        }
+        QFrame#VResizeHandle {
+            background: #2b313d;
+            border: none;
+            margin: 2px 0;
+        }
+        QFrame#VResizeHandle:hover {
+            background: #487cff;
+        }
+        QPushButton#Div25Btn {
+            background: #1e3a5f;
+            border: 1px solid #2d5a8e;
+            border-radius: 6px;
+            color: #5ba3f5;
+            font-weight: 600;
+            padding: 2px 6px;
+        }
+        QPushButton#Div25Btn:hover {
+            background: #2d5a8e;
+            color: #87c3ff;
+        }
+        QPushButton#Div25Btn:disabled {
+            background: #1a1e26;
+            border: 1px solid #2b313d;
+            color: #444c5e;
         }
         QListWidget::item {
             border-radius: 10px;
