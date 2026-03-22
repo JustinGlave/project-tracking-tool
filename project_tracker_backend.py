@@ -504,7 +504,7 @@ class ProjectTrackerBackend:
 
     # ---------- note methods ----------
 
-    def add_note(self, project_id: int, content: str, date: str = "",
+    def add_note(self, project_id: int, content: str, note_date: str = "",
                  status: str = "Open", closeout_comment: str = "") -> int:
         data = self._load_data()
         if self._find_project_dict(data, project_id) is None:
@@ -514,7 +514,7 @@ class ProjectTrackerBackend:
         note_number = len(existing) + 1
         data.setdefault("notes", []).append({
             "id": new_id, "project_id": project_id,
-            "note_number": note_number, "date": date.strip(),
+            "note_number": note_number, "date": note_date.strip(),
             "content": content.strip(), "status": status,
             "closeout_comment": closeout_comment.strip(),
         })
@@ -563,7 +563,8 @@ class ProjectTrackerBackend:
 
     # ---------- change order methods ----------
 
-    def _co_to_dict(self, co: ChangeOrderRecord, project_id: int, new_id: int) -> dict[str, Any]:
+    @staticmethod
+    def _co_to_dict(co: ChangeOrderRecord, project_id: int, new_id: int) -> dict[str, Any]:
         return {
             "id": new_id, "project_id": project_id,
             "cop_number": co.cop_number.strip(),
