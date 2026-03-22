@@ -1075,21 +1075,21 @@ class ProjectTrackerBackend:
 
         # Parse key:value pairs from the HTML table
         class _TableParser(_HTMLParser):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.data: dict[str, str] = {}
                 self._cells: list[str] = []
                 self._in_td = False
                 self._current = ""
 
-            def handle_starttag(self, tag, attrs):
+            def handle_starttag(self, tag: str, attrs: Any) -> None:
                 if tag == "tr":
                     self._cells = []
                 elif tag == "td":
                     self._in_td = True
                     self._current = ""
 
-            def handle_endtag(self, tag):
+            def handle_endtag(self, tag: str) -> None:
                 if tag == "td":
                     self._in_td = False
                     self._cells.append(self._current.strip())
@@ -1099,7 +1099,7 @@ class ProjectTrackerBackend:
                     if key:
                         self.data[key] = val
 
-            def handle_data(self, text):
+            def handle_data(self, text: str) -> None:
                 if self._in_td:
                     self._current += text
 
