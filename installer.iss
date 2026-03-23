@@ -1,7 +1,9 @@
 #define MyAppName "Project Tracking Tool"
 #define MyAppPublisher "ATS Inc."
 #define MyAppExeName "ProjectTrackingTool.exe"
-#define MyAppVersion GetVersionNumbersString("dist\ProjectTrackingTool\ProjectTrackingTool.exe")
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.0"
+#endif
 
 [Setup]
 AppName={#MyAppName}

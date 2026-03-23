@@ -60,7 +60,7 @@ if %ISCC%=="" (
     goto :zips
 )
 
-%ISCC% installer.iss
+%ISCC% /DMyAppVersion=%VERSION% installer.iss
 if errorlevel 1 (
     echo.
     echo ERROR: Inno Setup build failed.
