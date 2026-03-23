@@ -22,14 +22,14 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 
 ## Getting Started
 
-### For Users (Running the App)
+### For Users (Installing the App)
 
-1. Download the latest `ProjectTrackingTool.exe` from the [Releases](../../releases) page
-2. Place it in a folder of your choice (e.g. `C:\Tools\ProjectTracker\`)
-3. Copy your asset files into the same folder:
-   - `PTT_Normal.ico`
-   - `PTT_Transparent.png`
-4. Double-click `ProjectTrackingTool.exe` to launch
+1. Download `ProjectTrackingToolSetup.exe` from the [Releases](../../releases) page
+2. Run the installer — no admin rights required
+3. A desktop shortcut is created automatically
+4. Double-click the shortcut to launch
+
+Your project data is stored in `%APPDATA%\ATS Inc\Project Tracking Tool\` and is never touched by updates or reinstalls.
 
 No Python or other software required.
 
@@ -125,7 +125,8 @@ project_tracker_gui.py       — Main UI
 project_tracker_backend.py   — Data and storage logic
 updater.py                   — Auto-update system
 version.py                   — Current version number
-build.bat                    — Builds the .exe and install zip (developers only)
+build.bat                    — Builds the exe, installer, and zips (developers only)
+installer.iss                — Inno Setup installer script (developers only)
 PTT_Normal.ico               — App icon
 PTT_Transparent.png          — Watermark image
 ```
@@ -136,18 +137,28 @@ PTT_Transparent.png          — Watermark image
 
 1. Make your code changes
 2. Bump the version in `version.py`
-3. Run `build.bat` to build `dist\ProjectTrackingTool.exe` and the install zip
-4. Test the exe
+3. Run `build.bat` — this produces:
+   - `dist\ProjectTrackingTool\ProjectTrackingTool.exe` — test this first
+   - `dist\ProjectTrackingToolSetup.exe` — installer for new users
+   - `dist\ProjectTrackingTool.zip` — exe only, used by the auto-updater
+   - `dist\ProjectTrackingTool_FullInstall.zip` — full folder, for manual installs
+4. Test the exe and the installer
 5. Push changes to GitHub:
    ```
    git add .
    git commit -m "v1.x.x - description of changes"
    git push
    ```
-6. Create a release: `gh release create v1.x.x --title "v1.x.x" --notes "..."`
-7. Upload the exe and zip to the release
+6. Create a GitHub release:
+   ```
+   gh release create v1.x.x --title "v1.x.x" --notes "Description of what changed"
+   ```
+7. Upload the release assets:
+   ```
+   gh release upload v1.x.x dist/ProjectTrackingToolSetup.exe dist/ProjectTrackingTool.zip
+   ```
 
-Users will see an update banner in the app automatically on next launch.
+Users will see an update banner in the app automatically on next launch. The banner downloads `ProjectTrackingTool.zip` and replaces the exe in-place.
 
 ---
 
@@ -157,3 +168,4 @@ Users will see an update banner in the app automatically on next launch.
 - PySide6 (Qt for Python)
 - openpyxl (Excel export)
 - PyInstaller (exe packaging)
+- Inno Setup 6 (installer)
