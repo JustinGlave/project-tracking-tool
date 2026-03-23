@@ -37,6 +37,7 @@ class ProjectRecord:
     contract_value: str = ""
     job_docs: str = ""
     div25_url: str = ""
+    is_test: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -126,6 +127,23 @@ DEFAULT_TASKS: tuple[dict[str, Any], ...] = (
     {"phase": "Financial", "task_name": "Resolve All Change-orders"},
     {"phase": "Archive", "task_name": "Send record drawings to service Account Manager"},
     {"phase": "Financial", "task_name": "Final Billing and Payment"},
+)
+
+_PHOENIX_EXCLUDED: frozenset[str] = frozenset({
+    "Job Plan Developed",
+    "PM Book, and Checkout Sheet Book Developed",
+    "Engineering Re-estimate",
+    "Service Turnover",
+    "Job Back-up Archived",
+    "Scan Check-out Sheets to Job File",
+    "Return Excess Materials",
+    "Back-up Database Set-up Dial-up Database Tracking Form",
+    "Resolve Trailing Costs",
+    "Send record drawings to service Account Manager",
+})
+
+PHOENIX_TASKS: tuple[dict[str, Any], ...] = tuple(
+    t for t in DEFAULT_TASKS if t["task_name"] not in _PHOENIX_EXCLUDED
 )
 
 
@@ -219,6 +237,7 @@ class ProjectTrackerBackend:
         self,
         project: ProjectRecord,
         include_default_tasks: bool = True,
+        task_template: str = "standard",
     ) -> int:
         data = self._load_data()
         now = self._now_iso()
@@ -253,6 +272,7 @@ class ProjectTrackerBackend:
             "contract_value": project.contract_value.strip(),
             "job_docs": project.job_docs.strip(),
             "div25_url": project.div25_url.strip(),
+            "is_test": project.is_test,
             "created_at": now,
             "updated_at": now,
         }
@@ -260,7 +280,8 @@ class ProjectTrackerBackend:
         data["next_project_id"] = new_project_id + 1
 
         if include_default_tasks:
-            self._insert_default_tasks(data, new_project_id)
+            task_list = PHOENIX_TASKS if task_template == "phoenix" else DEFAULT_TASKS
+            self._insert_default_tasks(data, new_project_id, task_list)
 
         self._save_data(data)
         return new_project_id
@@ -330,11 +351,13 @@ class ProjectTrackerBackend:
         target_project = self._find_project_dict(data, project_id)
         return self._project_from_dict(target_project) if target_project else None
 
-    def list_projects(self, search_text: str = "") -> list[ProjectRecord]:
+    def list_projects(self, search_text: str = "", include_test: bool = True) -> list[ProjectRecord]:
         data = self._load_data()
         search_value = search_text.strip().casefold()
 
         project_dicts = data["projects"]
+        if not include_test:
+            project_dicts = [p for p in project_dicts if not p.get("is_test", False)]
         if search_value:
             project_dicts = [
                 item
@@ -470,6 +493,17 @@ class ProjectTrackerBackend:
         if owning_project is not None:
             owning_project["updated_at"] = self._now_iso()
 
+        self._save_data(data)
+
+    def replace_project_tasks(self, project_id: int, task_template: str) -> None:
+        """Delete all tasks for a project and re-insert from the chosen template."""
+        task_list = PHOENIX_TASKS if task_template == "phoenix" else DEFAULT_TASKS
+        data = self._load_data()
+        data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) != project_id]
+        project = self._find_project_dict(data, project_id)
+        if project is not None:
+            project["updated_at"] = self._now_iso()
+        self._insert_default_tasks(data, project_id, task_list)
         self._save_data(data)
 
     def list_tasks(self, project_id: int, phase: Optional[str] = None) -> list[TaskRecord]:
@@ -769,6 +803,178 @@ class ProjectTrackerBackend:
                 )
 
         return imported_project_id
+
+    def create_test_jobs(self) -> None:
+        """Create 5 demo jobs tagged is_test=True for training purposes."""
+
+        def _make(job_name: str, job_number: str, **kwargs: Any) -> int:
+            template = kwargs.pop("task_template", "standard")
+            rec = ProjectRecord(job_name=job_name, job_number=job_number, is_test=True, **kwargs)
+            return self.create_project(rec, include_default_tasks=True, task_template=template)
+
+        # ── Job 1: Early-stage standard job ──────────────────────────────────
+        pid1 = _make(
+            "PNNL - Building 3000 Controls Upgrade",
+            "DEMO-1001",
+            project_manager="Justin Glave",
+            sales_engineer="Sarah Mitchell",
+            booked_date="2026-01-10",
+            contract_value="248500",
+            owner="Pacific Northwest National Laboratory",
+            contracted_with="ATS Inc.",
+            general_contractor="Hensel Phelps",
+            warranty_period="12 months",
+            liquid_damages="$500/day",
+            target_completion="2026-09-30",
+            notes="Kickoff meeting scheduled for Feb 3. Owner rep is Dan Schultz.",
+        )
+        # Mark a few early tasks complete
+        tasks1 = self.list_tasks(pid1)
+        for t in tasks1[:4]:
+            self.set_task_completed(t.id, True)  # type: ignore[arg-type]
+        # Notes
+        self.add_note(pid1, "Kickoff meeting held Feb 3. All stakeholders present. Schedule confirmed.", "2026-02-03")
+        self.add_note(pid1, "Owner requested 2-week schedule acceleration. PM reviewing impacts.", "2026-02-18")
+        # Change order
+        self.add_change_order(pid1, ChangeOrderRecord(
+            cop_number="CO-001", description="Added 6 additional DDC points per owner request",
+            ats_price="8400", ats_status="Accepted", creation_date="2026-02-20",
+        ))
+
+        # ── Job 2: Mid-progress Phoenix job ──────────────────────────────────
+        pid2 = _make(
+            "Hanford Site - HVAC Controls Replacement",
+            "DEMO-1002",
+            project_manager="Lisa Park",
+            sales_engineer="Tom Nguyen",
+            booked_date="2025-11-05",
+            contract_value="512000",
+            owner="US Department of Energy",
+            contracted_with="ATS Inc.",
+            general_contractor="Bechtel",
+            warranty_period="24 months",
+            liquid_damages="$1,000/day",
+            target_completion="2026-07-15",
+            job_subtype="Phoenix",
+            task_template="phoenix",
+            notes="Security clearance required for all on-site personnel.",
+        )
+        tasks2 = self.list_tasks(pid2)
+        for t in tasks2[:10]:
+            self.set_task_completed(t.id, True)  # type: ignore[arg-type]
+        self.add_note(pid2, "Security badges issued to all ATS personnel.", "2025-11-20")
+        self.add_note(pid2, "Materials delivered to laydown area. Valves inspected — 2 units damaged in transit, replacements ordered.", "2026-01-08")
+        self.add_note(pid2, "Electrical sub mobilized. Install began in mechanical room B.", "2026-02-01")
+        self.add_change_order(pid2, ChangeOrderRecord(
+            cop_number="CO-001", description="Replacement of 2 damaged valves damaged in shipping",
+            ats_price="3200", ats_status="Accepted", creation_date="2026-01-10",
+        ))
+        self.add_change_order(pid2, ChangeOrderRecord(
+            cop_number="CO-002", description="Extended rigging for rooftop AHU installation",
+            ats_price="11750", ats_status="Pending", creation_date="2026-02-05",
+        ))
+
+        # ── Job 3: Nearly complete standard job ──────────────────────────────
+        pid3 = _make(
+            "Boeing Renton - Building 4-20 BAS",
+            "DEMO-1003",
+            project_manager="Justin Glave",
+            sales_engineer="Karen Ortiz",
+            booked_date="2025-08-12",
+            contract_value="189000",
+            owner="Boeing Commercial Airplanes",
+            contracted_with="ATS Inc.",
+            general_contractor="Turner Construction",
+            warranty_period="12 months",
+            target_completion="2026-04-01",
+            notes="All punch list items resolved. Awaiting final owner sign-off.",
+        )
+        tasks3 = self.list_tasks(pid3)
+        for t in tasks3[:-4]:
+            self.set_task_completed(t.id, True)  # type: ignore[arg-type]
+        self.add_note(pid3, "Commissioning complete. All sequences verified by owner.", "2026-02-28")
+        self.add_note(pid3, "Final punch list walkthrough completed. 3 minor items remain.", "2026-03-10")
+        self.add_note(pid3, "All punch items resolved. Owner training delivered to 4 staff members.", "2026-03-18")
+        self.add_change_order(pid3, ChangeOrderRecord(
+            cop_number="CO-001", description="Graphic screen additions — 4 custom floor plan views",
+            ats_price="5600", ats_status="Accepted", creation_date="2025-10-15",
+        ))
+        self.add_change_order(pid3, ChangeOrderRecord(
+            cop_number="CO-002", description="Added trend logging for 12 additional points",
+            ats_price="2100", ats_status="Accepted", creation_date="2025-12-01",
+        ))
+        self.add_change_order(pid3, ChangeOrderRecord(
+            cop_number="CO-003", description="Extended warranty to 24 months per owner request",
+            ats_price="4500", ats_status="Accepted", creation_date="2026-01-20",
+        ))
+
+        # ── Job 4: Brand new job, just kicked off ────────────────────────────
+        pid4 = _make(
+            "Microsoft Campus - Lab 7 Automation",
+            "DEMO-1004",
+            project_manager="Rachel Simmons",
+            sales_engineer="Justin Glave",
+            booked_date="2026-03-01",
+            contract_value="375000",
+            owner="Microsoft Corporation",
+            contracted_with="ATS Inc.",
+            warranty_period="12 months",
+            liquid_damages="$750/day",
+            target_completion="2026-12-15",
+            notes="New customer relationship. High visibility project — weekly status reports required.",
+        )
+        tasks4 = self.list_tasks(pid4)
+        for t in tasks4[:2]:
+            self.set_task_completed(t.id, True)  # type: ignore[arg-type]
+        self.add_note(pid4, "Sales-Ops turnover meeting held. PM introduced to owner contact.", "2026-03-05")
+        self.add_change_order(pid4, ChangeOrderRecord(
+            cop_number="CO-001", description="Scope addition: integrate lab fume hood monitoring",
+            ats_price="22000", ats_status="Pending", creation_date="2026-03-15",
+        ))
+
+        # ── Job 5: Fully closed out Phoenix job ──────────────────────────────
+        pid5 = _make(
+            "Richland Schools - District HVAC Controls",
+            "DEMO-1005",
+            project_manager="Lisa Park",
+            sales_engineer="Tom Nguyen",
+            booked_date="2025-03-20",
+            contract_value="298000",
+            owner="Richland School District",
+            contracted_with="ATS Inc.",
+            general_contractor="Lydig Construction",
+            warranty_period="24 months",
+            target_completion="2025-12-01",
+            job_subtype="Phoenix",
+            task_template="phoenix",
+            notes="Project closed. Warranty period active through Dec 2027.",
+        )
+        tasks5 = self.list_tasks(pid5)
+        for t in tasks5:
+            self.set_task_completed(t.id, True)  # type: ignore[arg-type]
+        self.add_note(pid5, "Project kick-off April 2025. Owner very engaged.", "2025-04-02")
+        self.add_note(pid5, "All 8 schools commissioned and signed off.", "2025-11-14")
+        self.add_note(pid5, "Final billing submitted. Retainage released.", "2025-12-10")
+        self.add_change_order(pid5, ChangeOrderRecord(
+            cop_number="CO-001", description="Added controls for 3 portable classrooms",
+            ats_price="9800", ats_status="Accepted", creation_date="2025-06-10",
+        ))
+        self.add_change_order(pid5, ChangeOrderRecord(
+            cop_number="CO-002", description="Overtime labor — accelerated schedule for winter break deadline",
+            ats_price="6300", ats_status="Accepted", creation_date="2025-10-01",
+        ))
+
+    def delete_test_jobs(self) -> None:
+        """Remove all projects tagged is_test=True and their associated data."""
+        data = self._load_data()
+        test_ids = {int(p["id"]) for p in data["projects"] if p.get("is_test", False)}
+        if not test_ids:
+            return
+        data["projects"] = [p for p in data["projects"] if int(p["id"]) not in test_ids]
+        data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) not in test_ids]
+        data["notes"] = [n for n in data["notes"] if int(n["project_id"]) not in test_ids]
+        data["change_orders"] = [c for c in data["change_orders"] if int(c["project_id"]) not in test_ids]
+        self._save_data(data)
 
     def export_project_snapshot(self, project_id: int, export_path: str | Path) -> Path:
         output_file = Path(export_path)
@@ -1183,8 +1389,12 @@ class ProjectTrackerBackend:
     # ---------- internal helpers ----------
 
     @staticmethod
-    def _insert_default_tasks(data: dict[str, Any], project_id: int) -> None:
-        for index, task_template in enumerate(DEFAULT_TASKS, start=1):
+    def _insert_default_tasks(
+        data: dict[str, Any],
+        project_id: int,
+        task_list: tuple[dict[str, Any], ...] = DEFAULT_TASKS,
+    ) -> None:
+        for index, task_template in enumerate(task_list, start=1):
             new_task_id = int(data["next_task_id"])
             data["tasks"].append(
                 {
@@ -1298,6 +1508,7 @@ class ProjectTrackerBackend:
             contract_value=project_dict.get("contract_value", ""),
             job_docs=project_dict.get("job_docs", ""),
             div25_url=project_dict.get("div25_url", ""),
+            is_test=bool(project_dict.get("is_test", False)),
             created_at=project_dict["created_at"],
             updated_at=project_dict["updated_at"],
         )
