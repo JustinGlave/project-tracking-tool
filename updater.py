@@ -88,12 +88,21 @@ def check_for_update() -> Optional[UpdateInfo]:
         if _parse_version(latest_tag) <= _parse_version(__version__):
             return None  # already up to date
 
-        # Find the .zip asset
+        # Find the update zip asset (not the full install zip)
         assets = data.get("assets", [])
         exe_asset = next(
-            (a for a in assets if a.get("name", "").lower().endswith(".zip")),
+            (a for a in assets
+             if a.get("name", "").lower() == "projecttrackingtool.zip"),
             None,
         )
+        # Fallback: any zip that isn't the full install
+        if exe_asset is None:
+            exe_asset = next(
+                (a for a in assets
+                 if a.get("name", "").lower().endswith(".zip")
+                 and "fullinstall" not in a.get("name", "").lower()),
+                None,
+            )
         if exe_asset is None:
             logger.warning("New release %s found but no .zip asset attached.", latest_tag)
             return None
