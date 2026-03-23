@@ -36,15 +36,25 @@ echo.
 echo Build complete: dist\ProjectTrackingTool\ProjectTrackingTool.exe
 echo Version: %VERSION%
 echo.
-echo Zipping exe only for GitHub release...
+
+:: Zip 1 - exe only for auto-updater
+echo Creating update zip (exe only)...
 powershell -Command "Compress-Archive -Path 'dist\ProjectTrackingTool\ProjectTrackingTool.exe' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force"
+echo   Created: dist\ProjectTrackingTool.zip
+
+:: Zip 2 - full folder for fresh installs
+echo Creating full install zip...
+powershell -Command "Compress-Archive -Path 'dist\ProjectTrackingTool' -DestinationPath 'dist\ProjectTrackingTool_FullInstall.zip' -Force"
+echo   Created: dist\ProjectTrackingTool_FullInstall.zip
+
 echo.
 echo Next steps:
 echo   1. Test dist\ProjectTrackingTool\ProjectTrackingTool.exe
-echo   2. Go to GitHub ^> Releases ^> Draft new release
+echo   2. Go to GitHub Releases, Draft new release
 echo   3. Tag: v%VERSION%
-echo   4. Upload: dist\ProjectTrackingTool.zip
+echo   4. Upload BOTH:
+echo        dist\ProjectTrackingTool.zip           (auto-updater)
+echo        dist\ProjectTrackingTool_FullInstall.zip  (fresh install)
 echo   5. Publish release
 echo.
 pause
-

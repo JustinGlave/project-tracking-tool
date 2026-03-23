@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pyright project_tracker_backend.py project_tracker_gui.py updater.py version.py)",
+      "Bash(pip install:*)",
+      "Bash(python -m mypy project_tracker_backend.py project_tracker_gui.py updater.py version.py --ignore-missing-imports)",
+      "Bash(python -m mypy project_tracker_backend.py project_tracker_gui.py --ignore-missing-imports --show-error-context)",
+      "Bash(python -c \"import project_tracker_backend\")",
+      "Skill(update-config)"
+    ]
+  }
+}
