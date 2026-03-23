@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
-from PySide6.QtCore import QDate, Qt, QRectF, Signal, QUrl
+from PySide6.QtCore import QDate, Qt, QRectF, Signal, QSettings, QUrl
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -118,7 +118,15 @@ class ProjectDialog(QDialog):
         self.job_docs_edit          = QLineEdit(project.job_docs if project else "")
         self.div25_url_edit         = QLineEdit(project.div25_url if project else "")
 
+        self.template_combo = QComboBox()
+        self.template_combo.addItem("Standard", "standard")
+        self.template_combo.addItem("Phoenix", "phoenix")
+        # Only shown when creating a new project (no existing project passed in)
+        self.template_combo.setVisible(project is None)
+
         form_layout = QFormLayout()
+        if project is None:
+            form_layout.addRow("Task Template",       self.template_combo)
         form_layout.addRow("Job name *",          self.job_name_edit)
         form_layout.addRow("Job number *",        self.job_number_edit)
         form_layout.addRow("Project manager",     self.pm_edit)
@@ -173,6 +181,9 @@ class ProjectDialog(QDialog):
             job_docs=self.job_docs_edit.text().strip(),
             div25_url=self.div25_url_edit.text().strip(),
         )
+
+    def get_template(self) -> str:
+        return self.template_combo.currentData()
 
     def accept(self) -> None:
         if not self.job_name_edit.text().strip():
@@ -342,11 +353,15 @@ class NotesWindow(QDialog):
         self.table.doubleClicked.connect(self._edit_selected)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionsMovable(False)
+        for c in range(5):
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        hdr.resizeSection(0, 40)
+        hdr.resizeSection(1, 100)
+        hdr.resizeSection(2, 320)
+        hdr.resizeSection(3, 100)
+        hdr.resizeSection(4, 280)
+        hdr.setStretchLastSection(False)
         layout.addWidget(self.table, 1)
 
         # Bottom buttons
@@ -562,6 +577,10 @@ class ChangeOrderWindow(QDialog):
         sb_layout.setContentsMargins(0, 0, 0, 0)
         sb_layout.setSpacing(4)
 
+        _tooltips = {
+            "ats_base":    "Base Price — sum of all ATS Price entries",
+            "ats_current": "Base Price + all Accepted ATS change orders",
+        }
         self._sum_labels: dict[str, QLabel] = {}
         for key, caption in [
             ("ats_base",     "ATS Base"),
@@ -579,6 +598,9 @@ class ChangeOrderWindow(QDialog):
             bl.setSpacing(1)
             cap = QLabel(caption)
             cap.setObjectName("MetaCaption")
+            if key in _tooltips:
+                box.setToolTip(_tooltips[key])
+                cap.setToolTip(_tooltips[key])
             val = QLabel("$0")
             val.setObjectName("StatValue")
             bl.addWidget(cap)
@@ -615,10 +637,27 @@ class ChangeOrderWindow(QDialog):
         self.table.doubleClicked.connect(self._edit_selected)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)   # Description
-        hdr.setSectionResizeMode(16, QHeaderView.ResizeMode.Stretch)  # Notes
-        for c in [0,1,3,4,5,6,7,8,9,10,11,12,13,14,15]:
-            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionsMovable(False)
+        for c in range(17):
+            hdr.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
+        hdr.resizeSection(0, 70)   # COP#
+        hdr.resizeSection(1, 90)   # Reference
+        hdr.resizeSection(2, 260)  # Description
+        hdr.resizeSection(3, 90)   # Date
+        hdr.resizeSection(4, 90)   # ATS Price
+        hdr.resizeSection(5, 90)   # Direct Cost
+        hdr.resizeSection(6, 90)   # ATS Status
+        hdr.resizeSection(7, 70)   # Portal
+        hdr.resizeSection(8, 90)   # Booked CO#
+        hdr.resizeSection(9, 80)   # Mech CO#
+        hdr.resizeSection(10, 90)  # Sub Quoted
+        hdr.resizeSection(11, 70)  # Plug #
+        hdr.resizeSection(12, 90)  # Sub Price
+        hdr.resizeSection(13, 90)  # Sub Status
+        hdr.resizeSection(14, 75)  # CO Sent
+        hdr.resizeSection(15, 75)  # Sub CO#
+        hdr.resizeSection(16, 200) # Notes
+        hdr.setStretchLastSection(False)
         layout.addWidget(self.table, 1)
 
         # ── Bottom buttons ────────────────────────────────────────────────────
@@ -646,11 +685,20 @@ class ChangeOrderWindow(QDialog):
             sub_price = co.sub_quoted_price if co.sub_quoted_price else co.sub_plug_number
             ats_bg  = self._STATUS_BG.get(co.ats_status, QColor("#FFFFFF"))
             sub_bg  = self._STATUS_BG.get(co.sub_status, QColor("#FFFFFF"))
+            def _fmt_price(v: str) -> str:
+                if not v:
+                    return ""
+                try:
+                    return f"${float(v):,.2f}"
+                except ValueError:
+                    return v
+
             row_vals = [
                 co.cop_number, co.reference, co.description, co.creation_date,
-                co.ats_price, co.ats_direct_cost, co.ats_status, co.booked_in_portal,
+                _fmt_price(co.ats_price), _fmt_price(co.ats_direct_cost),
+                co.ats_status, co.booked_in_portal,
                 co.ats_booked_co, co.mech_co,
-                co.sub_quoted_price, co.sub_plug_number, sub_price,
+                co.sub_quoted_price, co.sub_plug_number, _fmt_price(sub_price),
                 co.sub_status, co.sub_co_sent, co.sub_co_number, co.notes,
             ]
             for c, val in enumerate(row_vals):
@@ -1018,6 +1066,38 @@ class ResizeHandle(QFrame):
         self._drag_start_w = None
 
 
+class _HeaderResizeHandle(QFrame):
+    """Drag handle between project title and meta fields in the header row."""
+    _MIN_TITLE_W = 80
+    _MAX_TITLE_W = 700
+
+    def __init__(self, title_widget: QWidget, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._title_widget = title_widget
+        self._drag_start_x: Optional[float] = None
+        self._drag_start_w: Optional[int] = None
+        self.setFixedWidth(6)
+        self.setObjectName("ResizeHandle")
+        self.setCursor(QCursor(Qt.CursorShape.SplitHCursor))
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_x = event.globalPosition().x()
+            self._drag_start_w = self._title_widget.width()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_start_x is None:
+            return
+        delta = event.globalPosition().x() - self._drag_start_x
+        new_w = int(self._drag_start_w + delta)
+        new_w = max(self._MIN_TITLE_W, min(self._MAX_TITLE_W, new_w))
+        self._title_widget.setFixedWidth(new_w)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_start_x = None
+        self._drag_start_w = None
+
+
 class _VResizeHandle(QFrame):
     """Horizontal drag strip between the project header and task table.
     Drag up to grow the header, drag down to shrink it."""
@@ -1066,6 +1146,7 @@ class MainWindow(QMainWindow):
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
         self._div25_url: str = ""
+        self._show_test_jobs: bool = False
 
         from version import __version__
         self.setWindowTitle(f"Project Tracking Tool v{__version__}")
@@ -1189,6 +1270,13 @@ class MainWindow(QMainWindow):
         wrapper_layout.setContentsMargins(12, 8, 12, 8)
         wrapper_layout.setSpacing(4)
 
+        # Project title centered above the info row
+        self.project_title = ElidingLabel("No project selected")
+        self.project_title.setObjectName("ProjectTitle")
+        self.project_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.project_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        wrapper_layout.addWidget(self.project_title)
+
         row = QHBoxLayout()
         row.setSpacing(8)
         row.setContentsMargins(0, 0, 0, 0)
@@ -1198,17 +1286,6 @@ class MainWindow(QMainWindow):
         left_layout = QHBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
-
-        self.project_title = ElidingLabel("No project selected")
-        self.project_title.setObjectName("ProjectTitle")
-        self.project_title.setMinimumWidth(60)
-        self.project_title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        left_layout.addWidget(self.project_title, 3)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setObjectName("HeaderSep")
-        left_layout.addWidget(sep)
 
         self.job_number_value = ElidingLabel("—")
         self.pm_value = ElidingLabel("—")
@@ -1223,6 +1300,7 @@ class MainWindow(QMainWindow):
         self.div25_btn.setObjectName("Div25Btn")
         self.div25_btn.setToolTip("Open Div25 project page")
         self.div25_btn.setFixedWidth(80)
+        self.div25_btn.setMinimumHeight(42)
         self.div25_btn.setEnabled(False)
         self.div25_btn.clicked.connect(self._open_div25)
 
@@ -1243,17 +1321,17 @@ class MainWindow(QMainWindow):
             caption_lbl = QLabel(meta_caption)
             caption_lbl.setObjectName("MetaCaption")
             val_label.setObjectName("MetaValue")
+            val_label.setMinimumWidth(90)
             val_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             col.addWidget(caption_lbl)
             col.addWidget(val_label)
-            left_layout.addLayout(col, 1)
+            left_layout.addLayout(col, 2)
 
         # Add Div25 button — no caption, just the button aligned to bottom
         div25_col = QVBoxLayout()
         div25_col.setSpacing(0)
         div25_col.setContentsMargins(0, 0, 0, 0)
-        div25_col.addStretch()
-        div25_col.addWidget(self.div25_btn)
+        div25_col.addWidget(self.div25_btn, 1)
         left_layout.addLayout(div25_col, 0)
 
         row.addWidget(left_widget, 1)
@@ -1268,8 +1346,13 @@ class MainWindow(QMainWindow):
         self.completed_card = StatCard("Done")
         self.pending_card = StatCard("Pending")
         self.progress_card = StatCard("Progress")
-        for card in [self.total_tasks_card, self.completed_card, self.pending_card, self.progress_card]:
-            card.setFixedWidth(62)
+        for card, width in [
+            (self.total_tasks_card, 72),
+            (self.completed_card, 66),
+            (self.pending_card, 78),
+            (self.progress_card, 88),
+        ]:
+            card.setFixedWidth(width)
             right_layout.addWidget(card)
 
         sep2 = QFrame()
@@ -1277,19 +1360,14 @@ class MainWindow(QMainWindow):
         sep2.setObjectName("HeaderSep")
         right_layout.addWidget(sep2)
 
-        self.add_task_btn = QPushButton("Add Task")
-        self.add_task_btn.setFixedWidth(110)
-        self.add_task_btn.clicked.connect(self.add_task)
-
         # Export button with dropdown menu
-        self.export_btn = QPushButton("Export ▾")
-        self.export_btn.setFixedWidth(90)
+        self.export_btn = QPushButton("Export")
+        self.export_btn.setFixedWidth(92)
         export_menu = QMenu(self.export_btn)
         export_menu.addAction("Export to Excel (.xlsx)", self.export_excel)
         export_menu.addAction("Export Snapshot (.json)", self.export_snapshot)
         self.export_btn.setMenu(export_menu)
 
-        right_layout.addWidget(self.add_task_btn)
         right_layout.addWidget(self.export_btn)
 
         row.addWidget(right_widget, 0)
@@ -1329,6 +1407,12 @@ class MainWindow(QMainWindow):
         self.co_btn.clicked.connect(self._open_change_orders)
         top_row.addWidget(self.co_btn)
 
+        self.project_info_btn = QPushButton("Project Info")
+        self.project_info_btn.setFixedWidth(110)
+        self.project_info_btn.setToolTip("View all project details")
+        self.project_info_btn.clicked.connect(self._show_project_info)
+        top_row.addWidget(self.project_info_btn)
+
         top_row.addStretch(1)
 
         self.phase_filter = QComboBox()
@@ -1337,10 +1421,24 @@ class MainWindow(QMainWindow):
         self.phase_filter.currentTextChanged.connect(self.populate_tasks)
         top_row.addWidget(self.phase_filter)
 
+        self.add_task_btn = QPushButton("Add Task")
+        self.add_task_btn.setFixedWidth(100)
+        self.add_task_btn.clicked.connect(self.add_task)
+        top_row.addWidget(self.add_task_btn)
+
         self.task_search_edit = QLineEdit()
         self.task_search_edit.setPlaceholderText("Filter tasks...")
         self.task_search_edit.textChanged.connect(self.populate_tasks)
         top_row.addWidget(self.task_search_edit)
+
+        self.template_apply_combo = QComboBox()
+        self.template_apply_combo.addItem("Templates")
+        self.template_apply_combo.addItem("Standard", "standard")
+        self.template_apply_combo.addItem("Phoenix", "phoenix")
+        self.template_apply_combo.setFixedWidth(110)
+        self.template_apply_combo.activated.connect(self._apply_template_from_combo)
+        top_row.addWidget(self.template_apply_combo)
+
         wrapper_layout.addLayout(top_row)
 
         self.task_table = QTableWidget(0, 6)
@@ -1369,7 +1467,7 @@ class MainWindow(QMainWindow):
         # Default column widths
         header.resizeSection(1, 300)
         header.resizeSection(2, 120)
-        header.resizeSection(3, 120)
+        header.resizeSection(3, 140)
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._on_header_clicked)
 
@@ -1398,6 +1496,88 @@ class MainWindow(QMainWindow):
         project = self.backend.get_project(self.current_project_id)
         name = project.job_name if project else "Project"
         dlg = ChangeOrderWindow(self.current_project_id, name, self.backend, self)
+        dlg.exec()
+
+    def _apply_template_from_combo(self, index: int) -> None:
+        if index == 0:
+            return  # "Templates" header selected — do nothing
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            self.template_apply_combo.setCurrentIndex(0)
+            return
+        template = self.template_apply_combo.itemData(index)
+        template_name = self.template_apply_combo.itemText(index)
+        confirm = QMessageBox.question(
+            self,
+            "Replace tasks?",
+            f"This will delete ALL current tasks and replace them with the {template_name} template.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        self.template_apply_combo.setCurrentIndex(0)
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.backend.replace_project_tasks(self.current_project_id, template)
+        self.load_current_project()
+        self.status_bar.showMessage(f"Applied {template_name} template", 4000)
+
+    def _show_project_info(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        if not project:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Project Info — {project.job_name}")
+        dlg.setModal(True)
+
+        inner = QWidget()
+        form = QFormLayout(inner)
+        form.setContentsMargins(16, 16, 16, 16)
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        def _row(label: str, value: str) -> None:
+            lbl = QLabel(value or "—")
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setMinimumWidth(300)
+            form.addRow(f"<b>{label}</b>", lbl)
+
+        _row("Job Number",          project.job_number)
+        _row("Job Name",            project.job_name)
+        _row("Project Manager",     project.project_manager)
+        _row("Sales Engineer",      project.sales_engineer)
+        _row("Target Completion",   project.target_completion or "")
+        _row("Booked Date",         project.booked_date)
+        _row("Contract Value",      project.contract_value)
+        _row("Liquid Damages",      project.liquid_damages)
+        _row("Warranty Period",     project.warranty_period)
+        _row("Job Sub-Type",        project.job_subtype)
+        _row("Owner",               project.owner)
+        _row("Contracted With",     project.contracted_with)
+        _row("General Contractor",  project.general_contractor)
+        _row("Group Ops Manager",   project.group_ops_manager)
+        _row("Group Ops Supervisor",project.group_ops_supervisor)
+        _row("Div25 URL",           project.div25_url)
+        _row("Job Docs Path",       project.job_docs)
+        if project.notes:
+            notes_lbl = QLabel(project.notes)
+            notes_lbl.setWordWrap(True)
+            notes_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            notes_lbl.setMinimumWidth(300)
+            form.addRow("<b>Notes</b>", notes_lbl)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(inner)
+        layout.addWidget(close_btn)
+
+        # Size to content — let Qt calculate the natural size then add margins
+        inner.adjustSize()
+        dlg.adjustSize()
         dlg.exec()
 
     def _check_sync_folder(self) -> None:
@@ -1468,7 +1648,11 @@ class MainWindow(QMainWindow):
         import_action = QAction("Import Workbook", self)
         import_action.triggered.connect(self.import_workbook)
 
-        self.export_menu_action = QAction("Export Snapshot", self)
+        self.export_excel_action = QAction("Export to Excel (.xlsx)", self)
+        self.export_excel_action.triggered.connect(self.export_excel)
+        self.export_excel_action.setEnabled(False)
+
+        self.export_menu_action = QAction("Export Snapshot (.json)", self)
         self.export_menu_action.triggered.connect(self.export_snapshot)
         self.export_menu_action.setEnabled(False)
 
@@ -1477,9 +1661,22 @@ class MainWindow(QMainWindow):
 
         file_menu.addAction(new_action)
         file_menu.addAction(import_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.export_excel_action)
         file_menu.addAction(self.export_menu_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
+
+        # ── View menu ──────────────────────────────────────────────────────────
+        view_menu = self.menuBar().addMenu("View")
+
+        self._dark_mode_action = QAction("Dark Mode", self)
+        self._dark_mode_action.setCheckable(True)
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        dark_on = settings.value("darkMode", "true") != "false"
+        self._dark_mode_action.setChecked(dark_on)
+        self._dark_mode_action.triggered.connect(self._toggle_dark_mode)
+        view_menu.addAction(self._dark_mode_action)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu("Help")
@@ -1487,6 +1684,18 @@ class MainWindow(QMainWindow):
         version_history_action = QAction("Version History && Recent Updates", self)
         version_history_action.triggered.connect(self._show_version_history)
         help_menu.addAction(version_history_action)
+
+        help_menu.addSeparator()
+
+        email_support_action = QAction("Email Support", self)
+        email_support_action.triggered.connect(self._email_support)
+        help_menu.addAction(email_support_action)
+
+        help_menu.addSeparator()
+
+        self.test_jobs_action = QAction("Show Test Jobs", self)
+        self.test_jobs_action.triggered.connect(self._toggle_test_jobs)
+        help_menu.addAction(self.test_jobs_action)
 
         help_menu.addSeparator()
 
@@ -1566,6 +1775,27 @@ class MainWindow(QMainWindow):
 
         dialog.exec()
 
+    def _toggle_test_jobs(self) -> None:
+        if not self._show_test_jobs:
+            # Check if test jobs already exist; if not, create them
+            existing = self.backend.list_projects(include_test=True)
+            has_test = any(p.is_test for p in existing)
+            if not has_test:
+                self.backend.create_test_jobs()
+            self._show_test_jobs = True
+            self.test_jobs_action.setText("Hide Test Jobs")
+            self.status_bar.showMessage("Test jobs visible", 4000)
+        else:
+            self._show_test_jobs = False
+            self.test_jobs_action.setText("Show Test Jobs")
+            self.status_bar.showMessage("Test jobs hidden", 4000)
+            # If a test job is currently selected, deselect it
+            if self.current_project_id is not None:
+                proj = self.backend.get_project(self.current_project_id)
+                if proj and proj.is_test:
+                    self.current_project_id = None
+        self.refresh_project_list()
+
     def _show_about(self) -> None:
         from version import __version__
         QMessageBox.information(
@@ -1576,6 +1806,21 @@ class MainWindow(QMainWindow):
             f"Built for the ATS team.\n"
             f"© 2026 Justin Glave",
         )
+
+    def _toggle_dark_mode(self) -> None:
+        dark = self._dark_mode_action.isChecked()
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            if dark:
+                apply_dark_theme(app)
+            else:
+                apply_light_theme(app)
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        settings.setValue("darkMode", "true" if dark else "false")
+
+    @staticmethod
+    def _email_support() -> None:
+        QDesktopServices.openUrl(QUrl("mailto:Justing@atsinc.org"))
 
     def _build_shortcuts(self) -> None:
         delete_shortcut = QAction("Delete task", self)
@@ -1612,13 +1857,13 @@ class MainWindow(QMainWindow):
 
     def refresh_project_list(self) -> None:
         search_text = self.search_edit.text().strip() if hasattr(self, "search_edit") else ""
-        projects = self.backend.list_projects(search_text)
+        projects = self.backend.list_projects(search_text, include_test=getattr(self, "_show_test_jobs", False))
         selected_project_id = self.current_project_id
 
         self.project_list.blockSignals(True)
         self.project_list.clear()
         for project in projects:
-            item_text = f"{project.job_name}\n{project.job_number}   •   {project.project_manager or 'No PM'}"
+            item_text = f"{project.job_number}\n{project.job_name}   •   {project.project_manager or 'No PM'}"
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, project.id)
             self.project_list.addItem(item)
@@ -1646,6 +1891,7 @@ class MainWindow(QMainWindow):
             current_item.data(Qt.ItemDataRole.UserRole) if current_item else None
         )
         self.export_menu_action.setEnabled(self.current_project_id is not None)
+        self.export_excel_action.setEnabled(self.current_project_id is not None)
         self.load_current_project()
 
     def load_current_project(self) -> None:
@@ -1669,7 +1915,8 @@ class MainWindow(QMainWindow):
         self.completion_value.setText(project.target_completion or "—")
         self.liquid_value.setText(project.liquid_damages or "—")
         self.warranty_value.setText(project.warranty_period or "—")
-        self.booked_value.setText(project.booked_date or "—")
+        booked_raw = project.booked_date or ""
+        self.booked_value.setText(booked_raw.split("T")[0].split(" ")[0] or "—")
         self.contract_value_value.setText(
             f"${float(project.contract_value):,.0f}" if project.contract_value else "—"
         )
@@ -1708,6 +1955,7 @@ class MainWindow(QMainWindow):
         self.current_tasks = []
         self.task_table.setRowCount(0)
         self.export_menu_action.setEnabled(False)
+        self.export_excel_action.setEnabled(False)
 
     def _on_header_clicked(self, col: int) -> None:
         if col == 5:
@@ -1836,10 +2084,10 @@ class MainWindow(QMainWindow):
         row_layout.addStretch(1)
         return container
 
-    def _save_new_project(self, record: ProjectRecord, status_msg: str = "") -> bool:
+    def _save_new_project(self, record: ProjectRecord, status_msg: str = "", task_template: str = "standard") -> bool:
         """Create a new project from record, refresh list, update status. Returns True on success."""
         try:
-            new_id = self.backend.create_project(record, include_default_tasks=True)
+            new_id = self.backend.create_project(record, include_default_tasks=True, task_template=task_template)
         except Exception as exc:
             QMessageBox.critical(self, "Unable to create project", str(exc))
             return False
@@ -1852,7 +2100,7 @@ class MainWindow(QMainWindow):
         dialog = ProjectDialog(self)
         if dialog.exec() != int(QDialog.DialogCode.Accepted):
             return
-        self._save_new_project(dialog.get_data())
+        self._save_new_project(dialog.get_data(), task_template=dialog.get_template())
 
     def edit_current_project(self) -> None:
         if self.current_project_id is None:
@@ -1958,7 +2206,7 @@ class MainWindow(QMainWindow):
         if is_duplicate:
             # Find the existing project id
             existing = next(
-                (p for p in self.backend.list_projects()
+                (p for p in self.backend.list_projects(include_test=True)
                  if p.job_number.strip() == record.job_number.strip()),
                 None,
             )
@@ -2119,19 +2367,225 @@ class MainWindow(QMainWindow):
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
 
+def apply_light_theme(app: QApplication) -> None:
+    app.setStyle("Fusion")
+    palette = QPalette()
+
+    color_roles = [
+        (QPalette.ColorRole.Window, QColor(210, 212, 218)),
+        (QPalette.ColorRole.WindowText, QColor(25, 25, 25)),
+        (QPalette.ColorRole.Base, QColor(225, 227, 232)),
+        (QPalette.ColorRole.AlternateBase, QColor(200, 202, 208)),
+        (QPalette.ColorRole.ToolTipBase, QColor(255, 255, 220)),
+        (QPalette.ColorRole.ToolTipText, QColor(20, 20, 20)),
+        (QPalette.ColorRole.Text, QColor(25, 25, 25)),
+        (QPalette.ColorRole.Button, QColor(195, 198, 206)),
+        (QPalette.ColorRole.ButtonText, QColor(25, 25, 25)),
+        (QPalette.ColorRole.BrightText, QColor(180, 0, 0)),
+        (QPalette.ColorRole.Highlight, QColor(72, 124, 255)),
+        (QPalette.ColorRole.HighlightedText, QColor(255, 255, 255)),
+        (QPalette.ColorRole.Link, QColor(0, 90, 200)),
+    ]
+    for role, color in color_roles:
+        palette.setColor(role, color)
+
+    app.setPalette(palette)
+
+    app.setStyleSheet(
+        """
+        QWidget {
+            font-family: Segoe UI, Arial, sans-serif;
+            font-size: 11pt;
+        }
+        QMainWindow, QMenuBar, QMenu, QStatusBar {
+            background: #d2d4da;
+            color: #191919;
+        }
+        QMenuBar::item:selected, QMenu::item:selected {
+            background: #487cff;
+            color: white;
+        }
+        #Panel, #StatCard {
+            background: rgba(220, 222, 228, 200);
+            border: 1px solid #b0b4be;
+            border-radius: 14px;
+        }
+        QLabel#ProjectTitle {
+            font-size: 14pt;
+            font-weight: 700;
+            color: #111111;
+        }
+        QLabel#ProjectSubtitle {
+            color: #555b66;
+            font-size: 10pt;
+        }
+        QLabel#SectionTitle {
+            font-size: 12pt;
+            font-weight: 600;
+            color: #191919;
+        }
+        QLabel#StatTitle {
+            color: #555b66;
+            font-size: 7pt;
+        }
+        QLabel#StatValue {
+            font-size: 10pt;
+            font-weight: 700;
+            color: #191919;
+        }
+        QPushButton, QToolButton {
+            background: #c3c6ce;
+            border: 1px solid #a8acb8;
+            border-radius: 10px;
+            padding: 6px 16px;
+            color: #191919;
+        }
+        QPushButton:hover, QToolButton:hover {
+            background: #b2b6c2;
+        }
+        QPushButton:pressed, QToolButton:pressed {
+            background: #a0a4b0;
+        }
+        QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {
+            background: #e1e3e8;
+            border: 1px solid #a8acb8;
+            border-radius: 10px;
+            padding: 8px;
+            color: #191919;
+            selection-background-color: #487cff;
+        }
+        QListWidget, QTableWidget {
+            background: transparent;
+            border: 1px solid #a8acb8;
+            border-radius: 10px;
+            padding: 8px;
+            color: #191919;
+            selection-background-color: #487cff;
+        }
+        QTableWidget::item {
+            background: rgba(215, 217, 223, 180);
+            border: none;
+            padding: 4px 8px;
+        }
+        QTableWidget::item:alternate {
+            background: rgba(200, 202, 208, 180);
+        }
+        QTableWidget::item:selected {
+            background: rgba(72, 124, 255, 180);
+            color: white;
+        }
+        QHeaderView::section {
+            background: rgba(195, 198, 206, 220);
+            color: #191919;
+            padding: 8px;
+            border: none;
+            border-right: 1px solid #a8acb8;
+            border-bottom: 1px solid #a8acb8;
+            font-weight: 600;
+        }
+        QPlainTextEdit#ReadOnlyNotes {
+            background: #c8cad0;
+            color: #4a5060;
+            border: 1px solid #a8acb8;
+        }
+        QGroupBox {
+            border: 1px solid #a8acb8;
+            border-radius: 12px;
+            margin-top: 10px;
+            padding-top: 12px;
+            font-weight: 600;
+            color: #191919;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 4px;
+        }
+        QLabel#MetaCaption {
+            color: #555b66;
+            font-size: 9pt;
+            font-weight: 600;
+        }
+        QLabel#MetaValue {
+            color: #252d3a;
+            font-size: 9pt;
+        }
+        QFrame#ResizeHandle {
+            background: #a8acb8;
+            border: none;
+        }
+        QFrame#ResizeHandle:hover {
+            background: #487cff;
+        }
+        QFrame#VResizeHandle {
+            background: #a8acb8;
+            border: none;
+            margin: 2px 0;
+        }
+        QFrame#VResizeHandle:hover {
+            background: #487cff;
+        }
+        QPushButton#Div25Btn {
+            background: #c5d8f0;
+            border: 1px solid #90b8e0;
+            border-radius: 6px;
+            color: #1a5ca8;
+            font-weight: 600;
+            padding: 2px 6px;
+        }
+        QPushButton#Div25Btn:hover {
+            background: #a8c8e8;
+            color: #0d3f7a;
+        }
+        QPushButton#Div25Btn:disabled {
+            background: #c8cad0;
+            border: 1px solid #b0b4be;
+            color: #888c98;
+        }
+        QListWidget::item {
+            border-radius: 10px;
+            padding: 10px;
+            margin: 2px 0;
+            color: #191919;
+        }
+        QListWidget::item:selected {
+            background: #487cff;
+            color: white;
+        }
+        #UpdateBanner {
+            background: rgba(195, 228, 205, 220);
+            border-top: 1px solid #5cb87a;
+        }
+        #UpdateBanner QLabel#UpdateMsg {
+            color: #1a6830;
+            font-weight: 600;
+        }
+        #InstallBtn {
+            background: #2d8a4a;
+            border: 1px solid #3daa5a;
+            color: white;
+            font-weight: 700;
+        }
+        #InstallBtn:hover {
+            background: #3daa5a;
+        }
+        """
+    )
+
+
 def apply_dark_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
     palette = QPalette()
 
     color_roles = [
-        (QPalette.ColorRole.Window, QColor(25, 28, 34)),
+        (QPalette.ColorRole.Window, QColor(28, 28, 28)),
         (QPalette.ColorRole.WindowText, QColor(230, 230, 230)),
-        (QPalette.ColorRole.Base, QColor(18, 21, 27)),
-        (QPalette.ColorRole.AlternateBase, QColor(31, 35, 43)),
+        (QPalette.ColorRole.Base, QColor(18, 18, 18)),
+        (QPalette.ColorRole.AlternateBase, QColor(35, 35, 35)),
         (QPalette.ColorRole.ToolTipBase, QColor(240, 240, 240)),
         (QPalette.ColorRole.ToolTipText, QColor(20, 20, 20)),
         (QPalette.ColorRole.Text, QColor(230, 230, 230)),
-        (QPalette.ColorRole.Button, QColor(40, 45, 55)),
+        (QPalette.ColorRole.Button, QColor(45, 45, 45)),
         (QPalette.ColorRole.ButtonText, QColor(235, 235, 235)),
         (QPalette.ColorRole.BrightText, QColor(255, 90, 90)),
         (QPalette.ColorRole.Highlight, QColor(72, 124, 255)),
@@ -2150,12 +2604,12 @@ def apply_dark_theme(app: QApplication) -> None:
             font-size: 11pt;
         }
         QMainWindow, QMenuBar, QMenu, QStatusBar {
-            background: #191c22;
+            background: #1c1c1c;
             color: #e8e8e8;
         }
         #Panel, #StatCard {
-            background: rgba(32, 36, 44, 160);
-            border: 1px solid #2b313d;
+            background: rgba(38, 38, 38, 160);
+            border: 1px solid #3a3a3a;
             border-radius: 14px;
         }
         QLabel#ProjectTitle {
@@ -2163,7 +2617,7 @@ def apply_dark_theme(app: QApplication) -> None:
             font-weight: 700;
         }
         QLabel#ProjectSubtitle {
-            color: #98a4b8;
+            color: #999999;
             font-size: 10pt;
         }
         QLabel#SectionTitle {
@@ -2171,7 +2625,7 @@ def apply_dark_theme(app: QApplication) -> None:
             font-weight: 600;
         }
         QLabel#StatTitle {
-            color: #9eadc5;
+            color: #aaaaaa;
             font-size: 7pt;
         }
         QLabel#StatValue {
@@ -2179,20 +2633,20 @@ def apply_dark_theme(app: QApplication) -> None:
             font-weight: 700;
         }
         QPushButton, QToolButton {
-            background: #2c3442;
-            border: 1px solid #3a4557;
+            background: #383838;
+            border: 1px solid #505050;
             border-radius: 10px;
             padding: 6px 16px;
         }
         QPushButton:hover, QToolButton:hover {
-            background: #354055;
+            background: #454545;
         }
         QPushButton:pressed, QToolButton:pressed {
-            background: #253247;
+            background: #2a2a2a;
         }
         QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {
-            background: #12151b;
-            border: 1px solid #313746;
+            background: #121212;
+            border: 1px solid #404040;
             border-radius: 10px;
             padding: 8px;
             color: #ececec;
@@ -2200,41 +2654,40 @@ def apply_dark_theme(app: QApplication) -> None:
         }
         QListWidget, QTableWidget {
             background: transparent;
-            border: 1px solid #313746;
+            border: 1px solid #404040;
             border-radius: 10px;
             padding: 8px;
             color: #ececec;
             selection-background-color: #487cff;
         }
         QTableWidget::item {
-            background: rgba(22, 26, 34, 140);
-            color: #ececec;
+            background: rgba(25, 25, 25, 140);
             border: none;
             padding: 4px 8px;
         }
         QTableWidget::item:alternate {
-            background: rgba(30, 35, 46, 140);
+            background: rgba(35, 35, 35, 140);
         }
         QTableWidget::item:selected {
             background: rgba(72, 124, 255, 160);
             color: white;
         }
         QHeaderView::section {
-            background: rgba(30, 35, 46, 180);
-            color: #dfe5f2;
+            background: rgba(40, 40, 40, 180);
+            color: #e0e0e0;
             padding: 8px;
             border: none;
-            border-right: 1px solid #2f3644;
-            border-bottom: 1px solid #2f3644;
+            border-right: 1px solid #3a3a3a;
+            border-bottom: 1px solid #3a3a3a;
             font-weight: 600;
         }
         QPlainTextEdit#ReadOnlyNotes {
-            background: #0e1016;
-            color: #7a8599;
-            border: 1px solid #252b36;
+            background: #0a0a0a;
+            color: #888888;
+            border: 1px solid #303030;
         }
         QGroupBox {
-            border: 1px solid #2f3644;
+            border: 1px solid #3a3a3a;
             border-radius: 12px;
             margin-top: 10px;
             padding-top: 12px;
@@ -2246,23 +2699,23 @@ def apply_dark_theme(app: QApplication) -> None:
             padding: 0 4px;
         }
         QLabel#MetaCaption {
-            color: #6b7a95;
+            color: #888888;
             font-size: 9pt;
             font-weight: 600;
         }
         QLabel#MetaValue {
-            color: #d0d8eb;
+            color: #cccccc;
             font-size: 9pt;
         }
         QFrame#ResizeHandle {
-            background: #2b313d;
+            background: #3a3a3a;
             border: none;
         }
         QFrame#ResizeHandle:hover {
             background: #487cff;
         }
         QFrame#VResizeHandle {
-            background: #2b313d;
+            background: #3a3a3a;
             border: none;
             margin: 2px 0;
         }
@@ -2282,9 +2735,9 @@ def apply_dark_theme(app: QApplication) -> None:
             color: #87c3ff;
         }
         QPushButton#Div25Btn:disabled {
-            background: #1a1e26;
-            border: 1px solid #2b313d;
-            color: #444c5e;
+            background: #1a1a1a;
+            border: 1px solid #333333;
+            color: #555555;
         }
         QListWidget::item {
             border-radius: 10px;
@@ -2318,7 +2771,11 @@ def apply_dark_theme(app: QApplication) -> None:
 
 def main() -> int:
     app = QApplication(sys.argv)
-    apply_dark_theme(app)
+    settings = QSettings("ATSInc", "ProjectTrackingTool")
+    if settings.value("darkMode", "true") != "false":
+        apply_dark_theme(app)
+    else:
+        apply_light_theme(app)
     window = MainWindow()
     window.show()
     return int(app.exec())
