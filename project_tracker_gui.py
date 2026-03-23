@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
+
+
+def _resource_path(filename: str) -> Path:
+    """Locate a bundled asset whether running from source or a PyInstaller exe."""
+    if hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / filename
+    return Path(__file__).with_name(filename)
+
+
+def _app_data_path() -> Path:
+    """Return the writable user data file path, migrating from legacy location if needed."""
+    data_dir = Path(os.environ.get("APPDATA", Path.home())) / "ATS Inc" / "Project Tracking Tool"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    new_path = data_dir / "project_tracker_data.json"
+
+    # One-time migration: copy data from old location (next to exe) if new file doesn't exist
+    if not new_path.exists():
+        legacy = Path(sys.executable).with_name("project_tracker_data.json")
+        if legacy.exists():
+            import shutil
+            shutil.copy2(legacy, new_path)
+
+    return new_path
 from typing import Any, Optional
 
 from PySide6.QtCore import QDate, Qt, QRectF, Signal, QSettings, QUrl
@@ -1138,7 +1162,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._update_ready.connect(self._show_update_banner)
-        self.backend = ProjectTrackerBackend(Path(__file__).with_name("project_tracker_data.json"))
+        self.backend = ProjectTrackerBackend(_app_data_path())
         self.current_project_id: Optional[int] = None
         self.current_tasks: list[TaskRecord] = []
 
@@ -1154,7 +1178,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 700)
         self.setAcceptDrops(True)
 
-        _icon_path = Path(__file__).with_name("PTT_Normal.ico")
+        _icon_path = _resource_path("PTT_Normal.ico")
         if _icon_path.exists():
             _icon = QIcon(str(_icon_path))
             self.setWindowIcon(_icon)
@@ -1174,7 +1198,7 @@ class MainWindow(QMainWindow):
         threading.Thread(target=self._check_update_bg, daemon=True).start()
 
     def _build_ui(self) -> None:
-        central_widget = _BackgroundWidget(Path(__file__).with_name("PTT_Transparent.png"))
+        central_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
         self.setCentralWidget(central_widget)
 
         root_layout = QHBoxLayout(central_widget)
@@ -1453,7 +1477,7 @@ class MainWindow(QMainWindow):
         self.task_table.setAlternatingRowColors(False)
         self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
-        _vp = _WatermarkViewport(Path(__file__).with_name("PTT_Transparent.png"))
+        _vp = _WatermarkViewport(_resource_path("PTT_Transparent.png"))
         self.task_table.setViewport(_vp)
 
         header = self.task_table.horizontalHeader()
