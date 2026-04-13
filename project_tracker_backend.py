@@ -351,7 +351,13 @@ class ProjectTrackerBackend:
         target_project = self._find_project_dict(data, project_id)
         return self._project_from_dict(target_project) if target_project else None
 
-    def list_projects(self, search_text: str = "", include_test: bool = True) -> list[ProjectRecord]:
+    def list_projects(
+        self,
+        search_text: str = "",
+        include_test: bool = True,
+        sort_by: str = "updated",
+        sort_asc: bool = False,
+    ) -> list[ProjectRecord]:
         data = self._load_data()
         search_value = search_text.strip().casefold()
 
@@ -368,14 +374,17 @@ class ProjectTrackerBackend:
                 or search_value in str(item.get("sales_engineer", "")).casefold()
             ]
 
-        project_dicts = sorted(
-            project_dicts,
-            key=lambda item: (
+        if sort_by == "name":
+            key_fn = lambda item: str(item.get("job_name", "")).casefold()
+        elif sort_by == "job_number":
+            key_fn = lambda item: str(item.get("job_number", "")).casefold()
+        else:  # "updated" (default)
+            key_fn = lambda item: (
                 str(item.get("updated_at", "")),
                 str(item.get("job_name", "")).casefold(),
-            ),
-            reverse=True,
-        )
+            )
+
+        project_dicts = sorted(project_dicts, key=key_fn, reverse=not sort_asc)
         return [self._project_from_dict(item) for item in project_dicts]
 
     # ---------- task methods ----------

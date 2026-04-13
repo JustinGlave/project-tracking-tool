@@ -65,6 +65,8 @@ from PySide6.QtWidgets import (
     QToolTip,
 )
 
+import shutil
+
 from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
 
@@ -1156,13 +1158,67 @@ class _VResizeHandle(QFrame):
         self._drag_start_h = None
 
 
+class DataLocationDialog(QDialog):
+    """Dialog for configuring where the shared data file lives."""
+
+    def __init__(self, current_folder: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Data File Location")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        info = QLabel(
+            "Set the folder where the shared project database is stored.\n"
+            "Point all users to the same synced folder (e.g. SharePoint / OneDrive)\n"
+            "so everyone works from the same data."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        path_row = QHBoxLayout()
+        self.path_edit = QLineEdit(current_folder)
+        self.path_edit.setPlaceholderText("e.g. C:\\Users\\you\\ATS Inc\\Phoenix - ATS Job Tracker")
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse)
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(browse_btn)
+        layout.addLayout(path_row)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #f87171;")
+        layout.addWidget(self.status_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _browse(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select Shared Data Folder", self.path_edit.text())
+        if folder:
+            self.path_edit.setText(folder)
+
+    def _accept(self) -> None:
+        folder = self.path_edit.text().strip()
+        if folder and not Path(folder).exists():
+            self.status_label.setText(f"Folder does not exist: {folder}")
+            return
+        self.accept()
+
+    def selected_folder(self) -> str:
+        return self.path_edit.text().strip()
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
     def __init__(self) -> None:
         super().__init__()
         self._update_ready.connect(self._show_update_banner)
-        self.backend = ProjectTrackerBackend(_app_data_path())
+        self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.current_project_id: Optional[int] = None
         self.current_tasks: list[TaskRecord] = []
 
@@ -1236,6 +1292,23 @@ class MainWindow(QMainWindow):
         self.search_edit.setPlaceholderText("Search jobs, PM, sales engineer...")
         self.search_edit.textChanged.connect(self.refresh_project_list)
         panel_layout.addWidget(self.search_edit)
+
+        sort_row = QHBoxLayout()
+        sort_row.setSpacing(4)
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Last Updated", "updated")
+        self.sort_combo.addItem("Name", "name")
+        self.sort_combo.addItem("Job Number", "job_number")
+        self.sort_combo.currentIndexChanged.connect(self.refresh_project_list)
+        self.sort_dir_btn = QToolButton()
+        self.sort_dir_btn.setText("↑ A–Z")
+        self.sort_dir_btn.setCheckable(True)
+        self.sort_dir_btn.setChecked(False)
+        self.sort_dir_btn.setToolTip("Toggle sort direction")
+        self.sort_dir_btn.clicked.connect(self._toggle_sort_direction)
+        sort_row.addWidget(self.sort_combo, 1)
+        sort_row.addWidget(self.sort_dir_btn)
+        panel_layout.addLayout(sort_row)
 
         button_row = QHBoxLayout()
         self.new_project_btn = QPushButton("New")
@@ -1604,8 +1677,66 @@ class MainWindow(QMainWindow):
         dlg.adjustSize()
         dlg.exec()
 
+    def _resolve_data_path(self) -> Path:
+        """Return the data file path — custom shared folder if configured, else default."""
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        custom_folder = str(settings.value("dataFolder", "")).strip()
+        if custom_folder:
+            folder = Path(custom_folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            return folder / "project_tracker_data.json"
+        return _app_data_path()
+
+    def _open_data_location_settings(self) -> None:
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        current_folder = str(settings.value("dataFolder", "")).strip()
+
+        dlg = DataLocationDialog(current_folder, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_folder = dlg.selected_folder()
+
+        # If clearing back to default
+        if not new_folder:
+            settings.remove("dataFolder")
+            self._reload_backend()
+            return
+
+        new_path = Path(new_folder) / "project_tracker_data.json"
+
+        # Offer to copy existing data if target doesn't have a file yet
+        if not new_path.exists():
+            old_path = _app_data_path()
+            if old_path.exists() and old_path != new_path:
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Existing Data?",
+                    f"No data file found in the selected folder.\n\n"
+                    f"Copy your existing data to:\n{new_path}\n\n"
+                    f"(Recommended if you're setting this up for the first time)",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    shutil.copy2(old_path, new_path)
+
+        settings.setValue("dataFolder", new_folder)
+        self._reload_backend()
+        QMessageBox.information(
+            self,
+            "Data Location Updated",
+            f"Data file location set to:\n{new_path}\n\n"
+            f"The app is now using this location.",
+        )
+
+    def _reload_backend(self) -> None:
+        """Reinitialise the backend from the current resolved path and refresh the UI."""
+        self.current_project_id = None
+        self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        self.refresh_project_list()
+
     def _check_sync_folder(self) -> None:
-        """Warn if the app is running from a cloud-synced folder."""
+        """Warn if the app *executable* is running from a cloud-synced folder."""
         exe_path = str(Path(sys.executable).resolve()).lower()
         sync_indicators = ["onedrive", "dropbox", "google drive", "box sync", "icloud"]
         for indicator in sync_indicators:
@@ -1683,11 +1814,16 @@ class MainWindow(QMainWindow):
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
 
+        data_location_action = QAction("Data Location...", self)
+        data_location_action.triggered.connect(self._open_data_location_settings)
+
         file_menu.addAction(new_action)
         file_menu.addAction(import_action)
         file_menu.addSeparator()
         file_menu.addAction(self.export_excel_action)
         file_menu.addAction(self.export_menu_action)
+        file_menu.addSeparator()
+        file_menu.addAction(data_location_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -1879,9 +2015,21 @@ class MainWindow(QMainWindow):
     def _on_task_double_clicked(self) -> None:
         self._edit_selected_task()
 
+    def _toggle_sort_direction(self) -> None:
+        asc = self.sort_dir_btn.isChecked()
+        self.sort_dir_btn.setText("↑ A–Z" if asc else "↓ Z–A")
+        self.refresh_project_list()
+
     def refresh_project_list(self) -> None:
         search_text = self.search_edit.text().strip() if hasattr(self, "search_edit") else ""
-        projects = self.backend.list_projects(search_text, include_test=getattr(self, "_show_test_jobs", False))
+        sort_by = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "updated"
+        sort_asc = self.sort_dir_btn.isChecked() if hasattr(self, "sort_dir_btn") else False
+        projects = self.backend.list_projects(
+            search_text,
+            include_test=getattr(self, "_show_test_jobs", False),
+            sort_by=sort_by,
+            sort_asc=sort_asc,
+        )
         selected_project_id = self.current_project_id
 
         self.project_list.blockSignals(True)
