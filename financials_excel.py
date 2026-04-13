@@ -8,6 +8,12 @@ from typing import Optional
 
 from financials_models import FinancialSnapshot
 
+try:
+    import pyxlsb as _pyxlsb  # top-level so PyInstaller bundles it
+    _PYXLSB_AVAILABLE = True
+except ImportError:
+    _PYXLSB_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 # How long (seconds) before re-reading the file
@@ -152,26 +158,26 @@ class ExcelFinancialsProvider:
         ):
             return
 
-        try:
-            self._load(path)
-            self._cache_time = now
-            self._cache_mtime = mtime
-        except ModuleNotFoundError:
+        if not _PYXLSB_AVAILABLE:
             self._load_error = (
                 "Financial data is unavailable — please reinstall the app "
                 "using ProjectTrackingToolSetup.exe to enable this feature."
             )
-            logger.warning("pyxlsb not available in this installation")
+            return
+
+        try:
+            self._load(path)
+            self._cache_time = now
+            self._cache_mtime = mtime
         except Exception:
             logger.exception("Failed to read financial data file: %s", self._file_path)
 
     def _load(self, path: Path) -> None:
-        import pyxlsb  # imported lazily so the rest of the app works without it
 
         refreshed = datetime.now().replace(microsecond=0).isoformat(sep=" ")
         new_cache: dict[str, FinancialSnapshot] = {}
 
-        with pyxlsb.open_workbook(str(path)) as wb:
+        with _pyxlsb.open_workbook(str(path)) as wb:
             sheet_name = self._sheet_name or self._detect_sheet(wb)
             if not sheet_name:
                 logger.warning("Could not find a valid data sheet in %s", path)
@@ -237,7 +243,6 @@ class ExcelFinancialsProvider:
     @staticmethod
     def _detect_sheet(wb) -> str:
         """Find the first sheet whose row-8 col-1 cell looks like a job-number header."""
-        import pyxlsb
         for name in wb.sheets:
             try:
                 with wb.get_sheet(name) as sheet:

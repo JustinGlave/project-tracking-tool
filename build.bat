@@ -31,7 +31,7 @@ pyinstaller ^
     --hidden-import=xml.etree.ElementTree ^
     --hidden-import=xml.etree.cElementTree ^
     --collect-submodules=xml ^
-    --collect-all=pyxlsb ^
+    --hidden-import=pyxlsb ^
     project_tracker_gui.py
 
 if errorlevel 1 (
