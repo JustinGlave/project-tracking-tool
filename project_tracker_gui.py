@@ -9,7 +9,7 @@ from pathlib import Path
 def _resource_path(filename: str) -> Path:
     """Locate a bundled asset whether running from source or a PyInstaller exe."""
     if hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS) / filename
+        return Path(getattr(sys, "_MEIPASS")) / filename
     return Path(__file__).with_name(filename)
 
 
@@ -1193,7 +1193,7 @@ class DataLocationDialog(QDialog):
         self.status_label.setStyleSheet("color: #f87171;")
         layout.addWidget(self.status_label)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)  # type: ignore[arg-type]
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -2163,7 +2163,7 @@ class MainWindow(QMainWindow):
                         diff = snap.differential_margin
                         arrow = "▲" if diff >= 0 else "▼"
                         item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass  # never crash the sidebar over a financial lookup
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, project.id)
