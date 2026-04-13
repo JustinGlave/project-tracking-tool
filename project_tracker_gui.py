@@ -69,6 +69,8 @@ import shutil
 
 from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
+from financials_dialog import FinancialsDialog
+from financials_excel import ExcelFinancialsProvider
 
 PHASES = sorted({item["phase"] for item in DEFAULT_TASKS} | {"General"})
 
@@ -1220,6 +1222,7 @@ class MainWindow(QMainWindow):
         self._update_ready.connect(self._show_update_banner)
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.current_project_id: Optional[int] = None
+        self._financials_provider: Optional[ExcelFinancialsProvider] = self._build_financials_provider()
         self.current_tasks: list[TaskRecord] = []
 
         self._populating = False
@@ -1330,6 +1333,11 @@ class MainWindow(QMainWindow):
         self.project_list = QListWidget()
         self.project_list.currentItemChanged.connect(self.on_project_selected)
         panel_layout.addWidget(self.project_list, 1)
+
+        self._fin_data_label = QLabel("")
+        self._fin_data_label.setObjectName("FinDataMeta")
+        self._fin_data_label.setVisible(False)
+        panel_layout.addWidget(self._fin_data_label)
 
         secondary_row = QHBoxLayout()
         self.edit_project_btn = QPushButton("Edit")
@@ -1510,6 +1518,12 @@ class MainWindow(QMainWindow):
         self.project_info_btn.clicked.connect(self._show_project_info)
         top_row.addWidget(self.project_info_btn)
 
+        self.financials_btn = QPushButton("Financials")
+        self.financials_btn.setFixedWidth(100)
+        self.financials_btn.setToolTip("View financial data from ODIN")
+        self.financials_btn.clicked.connect(self._open_financials)
+        top_row.addWidget(self.financials_btn)
+
         top_row.addStretch(1)
 
         self.phase_filter = QComboBox()
@@ -1665,6 +1679,40 @@ class MainWindow(QMainWindow):
             notes_lbl.setMinimumWidth(300)
             form.addRow("<b>Notes</b>", notes_lbl)
 
+        # ── ODIN Financial Summary ──────────────────────────────────────── #
+        if self._financials_provider and project.job_number:
+            snap = self._financials_provider.get_financials(project.job_number)
+            if snap.contract_value:
+                sep = QFrame()
+                sep.setFrameShape(QFrame.Shape.HLine)
+                sep.setFrameShadow(QFrame.Shadow.Sunken)
+                form.addRow(sep)
+
+                fin_title = QLabel("<b>ODIN Financial Data</b>")
+                form.addRow(fin_title)
+
+                def _fin_row(label: str, value: str) -> None:
+                    lbl = QLabel(value)
+                    lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                    lbl.setMinimumWidth(300)
+                    form.addRow(f"<b>{label}</b>", lbl)
+
+                diff = snap.differential_margin
+                arrow = "▲" if diff >= 0 else "▼"
+                diff_color = "#4caf50" if diff >= 0.02 else ("#f44336" if diff <= -0.02 else "#ff9800")
+                diff_lbl = QLabel(f"<span style='color:{diff_color}; font-weight:bold'>{arrow} {abs(diff)*100:.1f}%</span>")
+                diff_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+                _fin_row("Contract Value",      f"${snap.contract_value:,.2f}")
+                _fin_row("Billed to Date",      f"${snap.billed_to_date:,.2f}")
+                _fin_row("Actual Cost",         f"${snap.actual_cost:,.2f}")
+                _fin_row("Booked Margin",       f"{snap.booked_margin*100:.1f}%")
+                _fin_row("Actual Margin",       f"{snap.actual_margin*100:.1f}%")
+                form.addRow("<b>Differential</b>", diff_lbl)
+                _fin_row("Status (ODIN)",       snap.status)
+                if snap.last_refreshed:
+                    _fin_row("Data as of",      snap.last_refreshed)
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dlg.accept)
 
@@ -1734,6 +1782,72 @@ class MainWindow(QMainWindow):
         self.current_project_id = None
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.refresh_project_list()
+
+    # ── Financials ─────────────────────────────────────────────────────── #
+
+    def _build_financials_provider(self) -> Optional[ExcelFinancialsProvider]:
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        file_path = settings.value("financialsFile", "")
+        sheet_name = settings.value("financialsSheet", "")
+        if file_path and Path(file_path).exists():
+            return ExcelFinancialsProvider(file_path, sheet_name)
+        return None
+
+    def _open_financials_file_settings(self) -> None:
+        settings = QSettings("ATSInc", "ProjectTrackingTool")
+        current_file = settings.value("financialsFile", "")
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Financial Data File",
+            str(Path(current_file).parent) if current_file else str(Path.home()),
+            "Excel Files (*.xlsb *.xlsx *.xlsm);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        settings.setValue("financialsFile", file_path)
+        self._financials_provider = ExcelFinancialsProvider(file_path)
+        QMessageBox.information(
+            self,
+            "Financial Data File Set",
+            f"Financial data will now be read from:\n{file_path}",
+        )
+
+    def _open_financials(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+
+        if self._financials_provider is None:
+            reply = QMessageBox.question(
+                self,
+                "No Financial Data File",
+                "No financial data file has been configured.\n\n"
+                "Would you like to select your ODIN tracking Excel file now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._open_financials_file_settings()
+            if self._financials_provider is None:
+                return
+
+        project = self.backend.get_project(self.current_project_id)
+        if not project:
+            return
+
+        if not project.job_number:
+            QMessageBox.information(
+                self, "Missing Job Number", "This project does not have a job number yet."
+            )
+            return
+
+        dlg = FinancialsDialog(
+            job_number=project.job_number,
+            provider=self._financials_provider,
+            parent=self,
+        )
+        dlg.exec()
 
     def _check_sync_folder(self) -> None:
         """Warn if the app *executable* is running from a cloud-synced folder."""
@@ -1817,6 +1931,9 @@ class MainWindow(QMainWindow):
         data_location_action = QAction("Data Location...", self)
         data_location_action.triggered.connect(self._open_data_location_settings)
 
+        financials_file_action = QAction("Financial Data File...", self)
+        financials_file_action.triggered.connect(self._open_financials_file_settings)
+
         file_menu.addAction(new_action)
         file_menu.addAction(import_action)
         file_menu.addSeparator()
@@ -1824,6 +1941,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_menu_action)
         file_menu.addSeparator()
         file_menu.addAction(data_location_action)
+        file_menu.addAction(financials_file_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -2036,10 +2154,27 @@ class MainWindow(QMainWindow):
         self.project_list.clear()
         for project in projects:
             item_text = f"{project.job_number}\n{project.job_name}   •   {project.project_manager or 'No PM'}"
+            if self._financials_provider and project.job_number:
+                snap = self._financials_provider.get_financials(project.job_number)
+                if snap.contract_value:
+                    diff = snap.differential_margin
+                    arrow = "▲" if diff >= 0 else "▼"
+                    item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, project.id)
             self.project_list.addItem(item)
         self.project_list.blockSignals(False)
+
+        # Update the "data as of" label (item 8)
+        if self._financials_provider:
+            ts = self._financials_provider.data_as_of
+            if ts:
+                self._fin_data_label.setText(f"ODIN data as of {ts}")
+                self._fin_data_label.setVisible(True)
+            else:
+                self._fin_data_label.setVisible(False)
+        else:
+            self._fin_data_label.setVisible(False)
 
         if projects:
             target_row = 0
@@ -2605,6 +2740,10 @@ def apply_light_theme(app: QApplication) -> None:
             font-weight: 700;
             color: #191919;
         }
+        QLabel#FinDataMeta {
+            color: #777777;
+            font-size: 8pt;
+        }
         QPushButton, QToolButton {
             background: #c3c6ce;
             border: 1px solid #a8acb8;
@@ -2803,6 +2942,10 @@ def apply_dark_theme(app: QApplication) -> None:
         QLabel#StatValue {
             font-size: 10pt;
             font-weight: 700;
+        }
+        QLabel#FinDataMeta {
+            color: #666666;
+            font-size: 8pt;
         }
         QPushButton, QToolButton {
             background: #383838;
