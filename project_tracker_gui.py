@@ -1725,7 +1725,8 @@ class MainWindow(QMainWindow):
         dlg.adjustSize()
         dlg.exec()
 
-    def _resolve_data_path(self) -> Path:
+    @staticmethod
+    def _resolve_data_path() -> Path:
         """Return the data file path — custom shared folder if configured, else default."""
         settings = QSettings("ATSInc", "ProjectTrackingTool")
         custom_folder = str(settings.value("dataFolder", "")).strip()
@@ -1778,24 +1779,25 @@ class MainWindow(QMainWindow):
         )
 
     def _reload_backend(self) -> None:
-        """Reinitialise the backend from the current resolved path and refresh the UI."""
+        """Reinitialize the backend from the current resolved path and refresh the UI."""
         self.current_project_id = None
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.refresh_project_list()
 
     # ── Financials ─────────────────────────────────────────────────────── #
 
-    def _build_financials_provider(self) -> Optional[ExcelFinancialsProvider]:
+    @staticmethod
+    def _build_financials_provider() -> Optional[ExcelFinancialsProvider]:
         settings = QSettings("ATSInc", "ProjectTrackingTool")
-        file_path = settings.value("financialsFile", "")
-        sheet_name = settings.value("financialsSheet", "")
+        file_path = str(settings.value("financialsFile", ""))
+        sheet_name = str(settings.value("financialsSheet", ""))
         if file_path and Path(file_path).exists():
             return ExcelFinancialsProvider(file_path, sheet_name)
         return None
 
     def _open_financials_file_settings(self) -> None:
         settings = QSettings("ATSInc", "ProjectTrackingTool")
-        current_file = settings.value("financialsFile", "")
+        current_file = str(settings.value("financialsFile", ""))
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -2162,7 +2164,7 @@ class MainWindow(QMainWindow):
                         arrow = "▲" if diff >= 0 else "▼"
                         item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
                 except Exception:
-                    pass
+                    pass  # never crash the sidebar over a financial lookup
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, project.id)
             self.project_list.addItem(item)
