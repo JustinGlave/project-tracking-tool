@@ -149,6 +149,11 @@ class ExcelFinancialsProvider:
             self._load(path)
             self._cache_time = now
             self._cache_mtime = mtime
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "The pyxlsb library is missing from this installation.\n"
+                "Please reinstall the app to resolve this."
+            ) from exc
         except Exception:
             logger.exception("Failed to read financial data file: %s", self._file_path)
 
