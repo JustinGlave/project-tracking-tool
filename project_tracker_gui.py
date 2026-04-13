@@ -2155,11 +2155,14 @@ class MainWindow(QMainWindow):
         for project in projects:
             item_text = f"{project.job_number}\n{project.job_name}   •   {project.project_manager or 'No PM'}"
             if self._financials_provider and project.job_number:
-                snap = self._financials_provider.get_financials(project.job_number)
-                if snap.contract_value:
-                    diff = snap.differential_margin
-                    arrow = "▲" if diff >= 0 else "▼"
-                    item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
+                try:
+                    snap = self._financials_provider.get_financials(project.job_number)
+                    if snap.contract_value:
+                        diff = snap.differential_margin
+                        arrow = "▲" if diff >= 0 else "▼"
+                        item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
+                except Exception:
+                    pass
             item = QListWidgetItem(item_text)
             item.setData(Qt.ItemDataRole.UserRole, project.id)
             self.project_list.addItem(item)

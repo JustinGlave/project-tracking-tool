@@ -94,6 +94,7 @@ class ExcelFinancialsProvider:
         self._cache: dict[str, FinancialSnapshot] = {}
         self._cache_mtime: float = 0.0
         self._cache_time: float = 0.0
+        self._load_error: str = ""
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -113,6 +114,12 @@ class ExcelFinancialsProvider:
             return FinancialSnapshot.empty(job_number)
 
         self._refresh_if_needed()
+
+        if self._load_error:
+            snap = FinancialSnapshot.empty(job_number)
+            snap.notes = [self._load_error]
+            snap.touch()
+            return snap
 
         snap = self._cache.get(key)
         if snap is None:
@@ -149,11 +156,12 @@ class ExcelFinancialsProvider:
             self._load(path)
             self._cache_time = now
             self._cache_mtime = mtime
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "The pyxlsb library is missing from this installation.\n"
-                "Please reinstall the app to resolve this."
-            ) from exc
+        except ModuleNotFoundError:
+            self._load_error = (
+                "Financial data is unavailable — please reinstall the app "
+                "using ProjectTrackingToolSetup.exe to enable this feature."
+            )
+            logger.warning("pyxlsb not available in this installation")
         except Exception:
             logger.exception("Failed to read financial data file: %s", self._file_path)
 
