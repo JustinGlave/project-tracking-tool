@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.0.15**
+**Current Version: v1.0.16**
 
 ---
 
@@ -14,6 +14,8 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - Add notes and change orders to each job
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
+- **Sort the project list** by Last Updated, Name, or Job Number — ascending or descending
+- **Shared database** — point all users to a shared folder (SharePoint / OneDrive) so everyone works from the same data in real time
 - Export projects to Excel or JSON snapshot
 - Dark mode / light mode toggle with preference saved across sessions
 - Auto-updates — when a new version is released, the app notifies you and installs it with one click
@@ -97,6 +99,26 @@ Click **Project Info** (next to Change Orders in the task bar) to open a popup s
 - **File → Export to Excel (.xlsx)** — generates a formatted Excel report for the selected job
 - **File → Export Snapshot (.json)** — saves a full JSON backup of the selected job
 - The **Export** button in the header also provides both options
+
+### Sorting the Project List
+
+Use the sort controls below the search box in the sidebar:
+
+- **Dropdown** — choose to sort by **Last Updated**, **Name**, or **Job Number**
+- **↑ A–Z / ↓ Z–A button** — toggle between ascending and descending order
+
+### Setting Up a Shared Database (Multi-User)
+
+All users can share a single database by pointing the app at a synced folder (SharePoint, OneDrive, etc.):
+
+1. The database owner sets up a shared SharePoint/OneDrive folder and invites all users
+2. Each user installs OneDrive and syncs the shared folder to their local machine
+3. In the app, go to **File → Data Location...**
+4. Click **Browse...** and select the local synced folder
+5. Click **OK** — if no data file exists there yet, the app will offer to copy your existing data over
+6. Repeat steps 3–5 on every user's machine, pointing to their local copy of the same synced folder
+
+> **Note:** Avoid having two people save changes at the exact same time — if OneDrive detects a conflict it will create a conflict copy. For a small team this is rarely an issue in practice.
 
 ### Using Dark Mode / Light Mode
 
