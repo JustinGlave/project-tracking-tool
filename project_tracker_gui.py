@@ -2155,8 +2155,7 @@ class MainWindow(QMainWindow):
         self.project_list.blockSignals(True)
         self.project_list.clear()
         for project in projects:
-            item_text = f"{project.job_number}\n{project.job_name}   •   {project.project_manager or 'No PM'}"
-            fin_color = None
+            fin_line = ""
             if self._financials_provider and project.job_number:
                 try:
                     snap = self._financials_provider.get_financials(project.job_number)
@@ -2164,22 +2163,24 @@ class MainWindow(QMainWindow):
                         diff = snap.differential_margin
                         arrow = "▲" if diff >= 0 else "▼"
                         pct = abs(diff) * 100
-                        if pct <= 1.0:
-                            fin_color = "#4caf50"
-                        elif pct <= 5.0:
-                            fin_color = "#ff9800"
-                        else:
-                            fin_color = "#f44336"
-                        item_text += f"\n${snap.contract_value:,.0f}   {arrow}{diff*100:.1f}%"
+                        color = "#4caf50" if pct <= 1.0 else ("#ff9800" if pct <= 5.0 else "#f44336")
+                        fin_line = f'<br/><span style="color:{color}">${snap.contract_value:,.0f}&nbsp;&nbsp;{arrow}{diff*100:.1f}%</span>'
                 except Exception:  # noqa: BLE001
-                    pass  # never crash the sidebar over a financial lookup
+                    pass
 
-            item = QListWidgetItem(item_text)
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
-            if fin_color:
-                from PySide6.QtGui import QColor
-                item.setForeground(QColor(fin_color))
+            lbl = QLabel(
+                f"{project.job_number}<br/>"
+                f"{project.job_name}&nbsp;&nbsp;•&nbsp;&nbsp;{project.project_manager or 'No PM'}"
+                f"{fin_line}"
+            )
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            lbl.setContentsMargins(4, 3, 4, 3)
+            lbl.setWordWrap(True)
+            item.setSizeHint(lbl.sizeHint())
             self.project_list.addItem(item)
+            self.project_list.setItemWidget(item, lbl)
         self.project_list.blockSignals(False)
 
         # Update the "data as of" label (item 8)
