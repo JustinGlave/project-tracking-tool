@@ -2155,19 +2155,55 @@ class MainWindow(QMainWindow):
         self.project_list.blockSignals(True)
         self.project_list.clear()
         for project in projects:
-            item_text = f"{project.job_number}\n{project.job_name}   •   {project.project_manager or 'No PM'}"
+            fin_html = ""
             if self._financials_provider and project.job_number:
                 try:
                     snap = self._financials_provider.get_financials(project.job_number)
                     if snap.contract_value:
                         diff = snap.differential_margin
                         arrow = "▲" if diff >= 0 else "▼"
-                        item_text += f"\n${snap.contract_value:,.0f}  |  {snap.actual_margin*100:.1f}%  {arrow}{abs(diff)*100:.1f}%"
+                        pct = abs(diff) * 100
+                        if pct <= 1.0:
+                            margin_color = "#4caf50"   # green
+                        elif pct <= 5.0:
+                            margin_color = "#ff9800"   # yellow
+                        else:
+                            margin_color = "#f44336"   # red
+                        fin_html = (
+                            f'<span style="color:#4caf50">${snap.contract_value:,.0f}</span>'
+                            f'&nbsp;&nbsp;|&nbsp;&nbsp;'
+                            f'<span style="color:{margin_color}">{arrow}{diff*100:.1f}%</span>'
+                        )
                 except Exception:  # noqa: BLE001
                     pass  # never crash the sidebar over a financial lookup
-            item = QListWidgetItem(item_text)
+
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
+
+            widget = QWidget()
+            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            layout = QVBoxLayout(widget)
+            layout.setContentsMargins(6, 4, 6, 4)
+            layout.setSpacing(1)
+
+            top = QLabel(f"{project.job_number}  •  {project.project_manager or 'No PM'}")
+            top.setStyleSheet("font-size: 9pt; color: #aaaaaa;")
+            name = QLabel(project.job_name)
+            name.setWordWrap(True)
+            name.setStyleSheet("font-size: 10pt; font-weight: 600;")
+            layout.addWidget(top)
+            layout.addWidget(name)
+
+            if fin_html:
+                fin_lbl = QLabel(fin_html)
+                fin_lbl.setStyleSheet("font-size: 9pt;")
+                fin_lbl.setTextFormat(Qt.TextFormat.RichText)
+                layout.addWidget(fin_lbl)
+
+            widget.adjustSize()
+            item.setSizeHint(widget.sizeHint())
             self.project_list.addItem(item)
+            self.project_list.setItemWidget(item, widget)
         self.project_list.blockSignals(False)
 
         # Update the "data as of" label (item 8)
