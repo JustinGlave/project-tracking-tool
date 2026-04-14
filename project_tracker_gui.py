@@ -29,7 +29,7 @@ def _app_data_path() -> Path:
     return new_path
 from typing import Any, Optional
 
-from PySide6.QtCore import QDate, Qt, QRectF, Signal, QSettings, QUrl
+from PySide6.QtCore import QDate, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -70,7 +70,7 @@ import shutil
 from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
-from financials_excel import ExcelFinancialsProvider
+from financials_excel import ExcelFinancialsProvider, SnapshotFinancialsProvider
 
 PHASES = sorted({item["phase"] for item in DEFAULT_TASKS} | {"General"})
 
@@ -1249,6 +1249,7 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_shortcuts()
         self.refresh_project_list()
+        QTimer.singleShot(0, self.refresh_project_list)
 
         # Warn if running from a cloud-synced folder
         self._check_sync_folder()
@@ -1302,11 +1303,12 @@ class MainWindow(QMainWindow):
         self.sort_combo.addItem("Last Updated", "updated")
         self.sort_combo.addItem("Name", "name")
         self.sort_combo.addItem("Job Number", "job_number")
+        self.sort_combo.setCurrentIndex(2)
         self.sort_combo.currentIndexChanged.connect(self.refresh_project_list)
         self.sort_dir_btn = QToolButton()
         self.sort_dir_btn.setText("↑ A–Z")
         self.sort_dir_btn.setCheckable(True)
-        self.sort_dir_btn.setChecked(False)
+        self.sort_dir_btn.setChecked(True)
         self.sort_dir_btn.setToolTip("Toggle sort direction")
         self.sort_dir_btn.clicked.connect(self._toggle_sort_direction)
         sort_row.addWidget(self.sort_combo, 1)
@@ -1332,6 +1334,9 @@ class MainWindow(QMainWindow):
 
         self.project_list = QListWidget()
         self.project_list.currentItemChanged.connect(self.on_project_selected)
+        self.project_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.project_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.project_list.setSpacing(1)
         panel_layout.addWidget(self.project_list, 1)
 
         self._fin_data_label = QLabel("")
@@ -1787,12 +1792,14 @@ class MainWindow(QMainWindow):
     # ── Financials ─────────────────────────────────────────────────────── #
 
     @staticmethod
-    def _build_financials_provider() -> Optional[ExcelFinancialsProvider]:
+    def _build_financials_provider() -> Optional[ExcelFinancialsProvider | SnapshotFinancialsProvider]:
         settings = QSettings("ATSInc", "ProjectTrackingTool")
         file_path = str(settings.value("financialsFile", ""))
-        sheet_name = str(settings.value("financialsSheet", ""))
+        snapshot_path = MainWindow._resolve_data_path().parent / "financial_snapshot.json"
         if file_path and Path(file_path).exists():
-            return ExcelFinancialsProvider(file_path, sheet_name)
+            return ExcelFinancialsProvider(file_path, sheet_name="Phoenix Projects", snapshot_path=snapshot_path)
+        if snapshot_path.exists():
+            return SnapshotFinancialsProvider(snapshot_path)
         return None
 
     def _open_financials_file_settings(self) -> None:
@@ -1809,12 +1816,14 @@ class MainWindow(QMainWindow):
             return
 
         settings.setValue("financialsFile", file_path)
-        self._financials_provider = ExcelFinancialsProvider(file_path)
+        snapshot_path = self._resolve_data_path().parent / "financial_snapshot.json"
+        self._financials_provider = ExcelFinancialsProvider(file_path, sheet_name="Phoenix Projects", snapshot_path=snapshot_path)
         QMessageBox.information(
             self,
             "Financial Data File Set",
             f"Financial data will now be read from:\n{file_path}",
         )
+        self.refresh_project_list()
 
     def _open_financials(self) -> None:
         if self.current_project_id is None:
@@ -1850,6 +1859,7 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
+        self.refresh_project_list()
 
     def _check_sync_folder(self) -> None:
         """Warn if the app *executable* is running from a cloud-synced folder."""
@@ -2155,7 +2165,7 @@ class MainWindow(QMainWindow):
         self.project_list.blockSignals(True)
         self.project_list.clear()
         for project in projects:
-            fin_line = ""
+            fin_html = ""
             if self._financials_provider and project.job_number:
                 try:
                     snap = self._financials_provider.get_financials(project.job_number)
@@ -2163,24 +2173,48 @@ class MainWindow(QMainWindow):
                         diff = snap.differential_margin
                         arrow = "▲" if diff >= 0 else "▼"
                         pct = abs(diff) * 100
-                        color = "#4caf50" if pct <= 1.0 else ("#ff9800" if pct <= 5.0 else "#f44336")
-                        fin_line = f'<br/><span style="color:{color}">${snap.contract_value:,.0f}&nbsp;&nbsp;{arrow}{diff*100:.1f}%</span>'
+                        margin_color = "#4caf50" if pct <= 1.0 else ("#ff9800" if pct <= 5.0 else "#f44336")
+                        fin_html = (
+                            f'<span style="color:#4caf50">${snap.contract_value:,.0f}</span>'
+                            f'<span style="color:{margin_color}">&nbsp;&nbsp;{arrow}{diff*100:.1f}%</span>'
+                        )
+                    else:
+                        fin_html = '<span style="color:#888888">ODIN: No data</span>'
                 except Exception:  # noqa: BLE001
-                    pass
+                    import logging as _logging
+                    _logging.getLogger(__name__).exception(
+                        "Failed to build financial line for job %s", project.job_number
+                    )
+
+            job_name = project.job_name or ""
+            if len(job_name) > 36:
+                job_name = job_name[:34] + "…"
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
-            lbl = QLabel(
-                f"{project.job_number}<br/>"
-                f"{project.job_name}&nbsp;&nbsp;•&nbsp;&nbsp;{project.project_manager or 'No PM'}"
-                f"{fin_line}"
-            )
-            lbl.setTextFormat(Qt.TextFormat.RichText)
-            lbl.setContentsMargins(4, 3, 4, 3)
-            lbl.setWordWrap(True)
-            item.setSizeHint(lbl.sizeHint())
+
+            widget = QWidget()
+            widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            layout = QVBoxLayout(widget)
+            layout.setContentsMargins(4, 6, 4, 16)
+            layout.setSpacing(3)
+
+            num_lbl = QLabel(project.job_number or "")
+            layout.addWidget(num_lbl)
+
+            name_lbl = QLabel(job_name)
+            layout.addWidget(name_lbl)
+
+            if fin_html:
+                fin_lbl = QLabel(fin_html)
+                fin_lbl.setTextFormat(Qt.TextFormat.RichText)
+                layout.addWidget(fin_lbl)
+
+            widget.adjustSize()
+            item_w = self.project_list.viewport().width() or 196
+            item.setSizeHint(QSize(item_w, widget.sizeHint().height() + 12))
             self.project_list.addItem(item)
-            self.project_list.setItemWidget(item, lbl)
+            self.project_list.setItemWidget(item, widget)
         self.project_list.blockSignals(False)
 
         # Update the "data as of" label (item 8)

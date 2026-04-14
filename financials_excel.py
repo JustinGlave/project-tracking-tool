@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
+import json
+import shutil
+import tempfile
 import time
 import logging
 from datetime import datetime
@@ -22,7 +26,7 @@ _CACHE_TTL = 300  # 5 minutes
 # Row index (0-based) where the column headers live in the PM sheet
 _HEADER_ROW = 8
 
-# Column indices in the PM-named sheet (e.g. "Justin Glave")
+# Column indices (0-based) in the PM-named sheet (e.g. "Justin Glave")
 _COL_JOB_NUMBER    = 1
 _COL_JOB_NAME      = 2
 _COL_CONTRACT      = 3
@@ -94,9 +98,10 @@ class ExcelFinancialsProvider:
     the same session don't re-read the file.
     """
 
-    def __init__(self, file_path: str, sheet_name: str = "") -> None:
+    def __init__(self, file_path: str, sheet_name: str = "", snapshot_path: Optional[Path] = None) -> None:
         self._file_path = file_path
         self._sheet_name = sheet_name
+        self._snapshot_path = snapshot_path
         self._cache: dict[str, FinancialSnapshot] = {}
         self._cache_mtime: float = 0.0
         self._cache_time: float = 0.0
@@ -105,6 +110,13 @@ class ExcelFinancialsProvider:
     # ------------------------------------------------------------------ #
     # Public API                                                           #
     # ------------------------------------------------------------------ #
+
+    def force_refresh(self) -> None:
+        """Reset cache so the file is re-read on the next get_financials call."""
+        self._cache_time = 0.0
+        self._cache_mtime = 0.0
+        self._cache = {}
+        self._load_error = ""
 
     @property
     def data_as_of(self) -> str:
@@ -177,6 +189,25 @@ class ExcelFinancialsProvider:
         refreshed = datetime.now().replace(microsecond=0).isoformat(sep=" ")
         new_cache: dict[str, FinancialSnapshot] = {}
 
+        # Copy to a temp file so we can read it even while Excel has it open
+        with tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            shutil.copy2(str(path), tmp_path)
+            self._load_rows(Path(tmp_path), new_cache, refreshed)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
+        self._cache = new_cache
+        logger.info("Loaded %d financial records from %s", len(new_cache), path)
+        if self._snapshot_path:
+            self._save_snapshot()
+
+    def _load_rows(self, path: Path, new_cache: dict, refreshed: str) -> None:
+
+        def _c(vals: list, idx: int):
+            return vals[idx] if len(vals) > idx else None
+
         with _pyxlsb.open_workbook(str(path)) as wb:
             sheet_name = self._sheet_name or self._detect_sheet(wb)
             if not sheet_name:
@@ -198,62 +229,115 @@ class ExcelFinancialsProvider:
 
                     snap = FinancialSnapshot(
                         job_number=key,
-                        job_name=_str(vals[_COL_JOB_NAME] if len(vals) > _COL_JOB_NAME else None),
-                        project_manager=_str(vals[_COL_PM] if len(vals) > _COL_PM else None),
-                        sales_person=_str(vals[_COL_SALES] if len(vals) > _COL_SALES else None),
-                        status=_str(vals[_COL_STATUS] if len(vals) > _COL_STATUS else None),
+                        job_name=_str(_c(vals, _COL_JOB_NAME)),
+                        project_manager=_str(_c(vals, _COL_PM)),
+                        sales_person=_str(_c(vals, _COL_SALES)),
+                        status=_str(_c(vals, _COL_STATUS)),
 
-                        contract_value=_flt(vals[_COL_CONTRACT] if len(vals) > _COL_CONTRACT else None),
-                        billed_to_date=_flt(vals[_COL_BILLED] if len(vals) > _COL_BILLED else None),
-                        amount_paid_to_date=_flt(vals[_COL_PAID] if len(vals) > _COL_PAID else None),
-                        estimated_cost=_flt(vals[_COL_EAC] if len(vals) > _COL_EAC else None),
-                        actual_cost=_flt(vals[_COL_ACTUAL_COST] if len(vals) > _COL_ACTUAL_COST else None),
+                        contract_value=_flt(_c(vals, _COL_CONTRACT)),
+                        billed_to_date=_flt(_c(vals, _COL_BILLED)),
+                        amount_paid_to_date=_flt(_c(vals, _COL_PAID)),
+                        estimated_cost=_flt(_c(vals, _COL_EAC)),
+                        actual_cost=_flt(_c(vals, _COL_ACTUAL_COST)),
 
-                        booked_margin=_flt(vals[_COL_BOOKED_MARGIN] if len(vals) > _COL_BOOKED_MARGIN else None),
-                        actual_margin=_flt(vals[_COL_ACTUAL_MARGIN] if len(vals) > _COL_ACTUAL_MARGIN else None),
-                        differential_margin=_flt(vals[_COL_DIFF_MARGIN] if len(vals) > _COL_DIFF_MARGIN else None),
+                        booked_margin=_flt(_c(vals, _COL_BOOKED_MARGIN)),
+                        actual_margin=_flt(_c(vals, _COL_ACTUAL_MARGIN)),
+                        differential_margin=_flt(_c(vals, _COL_DIFF_MARGIN)),
 
-                        pm_hours_actual=_flt(vals[_COL_PM_HOURS] if len(vals) > _COL_PM_HOURS else None),
-                        tech_hours_actual=_flt(vals[_COL_TECH_HOURS] if len(vals) > _COL_TECH_HOURS else None),
-                        pm_cost_actual=_flt(vals[_COL_PM_COST] if len(vals) > _COL_PM_COST else None),
-                        tech_cost_actual=_flt(vals[_COL_TECH_COST] if len(vals) > _COL_TECH_COST else None),
+                        pm_hours_actual=_flt(_c(vals, _COL_PM_HOURS)),
+                        tech_hours_actual=_flt(_c(vals, _COL_TECH_HOURS)),
+                        pm_cost_actual=_flt(_c(vals, _COL_PM_COST)),
+                        tech_cost_actual=_flt(_c(vals, _COL_TECH_COST)),
 
-                        labor_rem_pct=_flt(vals[_COL_LABOR_REM_PCT] if len(vals) > _COL_LABOR_REM_PCT else None),
-                        material_rem_pct=_flt(vals[_COL_MAT_REM_PCT] if len(vals) > _COL_MAT_REM_PCT else None),
-                        warranty_rem_pct=_flt(vals[_COL_WARR_REM_PCT] if len(vals) > _COL_WARR_REM_PCT else None),
-                        travel_rem_pct=_flt(vals[_COL_TRAV_REM_PCT] if len(vals) > _COL_TRAV_REM_PCT else None),
-                        subcontract_rem_pct=_flt(vals[_COL_SUB_REM_PCT] if len(vals) > _COL_SUB_REM_PCT else None),
-                        odc_rem_pct=_flt(vals[_COL_ODC_REM_PCT] if len(vals) > _COL_ODC_REM_PCT else None),
+                        labor_rem_pct=_flt(_c(vals, _COL_LABOR_REM_PCT)),
+                        material_rem_pct=_flt(_c(vals, _COL_MAT_REM_PCT)),
+                        warranty_rem_pct=_flt(_c(vals, _COL_WARR_REM_PCT)),
+                        travel_rem_pct=_flt(_c(vals, _COL_TRAV_REM_PCT)),
+                        subcontract_rem_pct=_flt(_c(vals, _COL_SUB_REM_PCT)),
+                        odc_rem_pct=_flt(_c(vals, _COL_ODC_REM_PCT)),
 
-                        labor_rem_usd=_flt(vals[_COL_LABOR_REM_USD] if len(vals) > _COL_LABOR_REM_USD else None),
-                        material_rem_usd=_flt(vals[_COL_MAT_REM_USD] if len(vals) > _COL_MAT_REM_USD else None),
-                        warranty_rem_usd=_flt(vals[_COL_WARR_REM_USD] if len(vals) > _COL_WARR_REM_USD else None),
-                        travel_rem_usd=_flt(vals[_COL_TRAV_REM_USD] if len(vals) > _COL_TRAV_REM_USD else None),
-                        subcontract_rem_usd=_flt(vals[_COL_SUB_REM_USD] if len(vals) > _COL_SUB_REM_USD else None),
-                        odc_rem_usd=_flt(vals[_COL_ODC_REM_USD] if len(vals) > _COL_ODC_REM_USD else None),
+                        labor_rem_usd=_flt(_c(vals, _COL_LABOR_REM_USD)),
+                        material_rem_usd=_flt(_c(vals, _COL_MAT_REM_USD)),
+                        warranty_rem_usd=_flt(_c(vals, _COL_WARR_REM_USD)),
+                        travel_rem_usd=_flt(_c(vals, _COL_TRAV_REM_USD)),
+                        subcontract_rem_usd=_flt(_c(vals, _COL_SUB_REM_USD)),
+                        odc_rem_usd=_flt(_c(vals, _COL_ODC_REM_USD)),
 
                         last_refreshed=refreshed,
                         notes=[],
                     )
                     new_cache[key] = snap
 
-        self._cache = new_cache
-        logger.info("Loaded %d financial records from %s", len(new_cache), path)
-
     @staticmethod
     def _detect_sheet(wb) -> str:
-        """Find the first sheet whose row-8 col-1 cell looks like a job-number header."""
+        """Find the first sheet whose header row contains a 'Job Number' cell."""
         for name in wb.sheets:
             try:
                 with wb.get_sheet(name) as sheet:
                     for row_idx, row in enumerate(sheet.rows()):
                         if row_idx == _HEADER_ROW:
-                            vals = [c.v for c in row]
-                            if len(vals) > _COL_JOB_NUMBER:
-                                v = vals[_COL_JOB_NUMBER]
-                                if isinstance(v, str) and "job number" in v.lower():
+                            for cell in row:
+                                if isinstance(cell.v, str) and "job number" in cell.v.lower():
                                     return name
                             break
             except Exception:
                 continue
         return ""
+
+    def _save_snapshot(self) -> None:
+        """Write the current cache to a JSON snapshot file for other machines to read."""
+        try:
+            data = {
+                "saved_at": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                "records": {k: dataclasses.asdict(v) for k, v in self._cache.items()},
+            }
+            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._snapshot_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            logger.info("Financial snapshot saved to %s", self._snapshot_path)
+        except Exception:
+            logger.exception("Failed to save financial snapshot to %s", self._snapshot_path)
+
+
+class SnapshotFinancialsProvider:
+    """
+    Read-only provider that loads financial data from a JSON snapshot file.
+    Used on machines that don't have the live .xlsb file.
+    """
+
+    def __init__(self, snapshot_path: Path) -> None:
+        self._snapshot_path = snapshot_path
+        self._cache: dict[str, FinancialSnapshot] = {}
+        self._loaded = False
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            with open(self._snapshot_path, encoding="utf-8") as f:
+                data = json.load(f)
+            for key, record in data.get("records", {}).items():
+                record.pop("job_id", None)  # drop fields not in current dataclass
+                self._cache[key] = FinancialSnapshot(**record)
+            logger.info("Loaded %d records from financial snapshot %s", len(self._cache), self._snapshot_path)
+        except Exception:
+            logger.exception("Failed to load financial snapshot from %s", self._snapshot_path)
+
+    @property
+    def data_as_of(self) -> str:
+        for snap in self._cache.values():
+            return f"{snap.last_refreshed} (snapshot)" if snap.last_refreshed else ""
+        return ""
+
+    def get_financials(self, job_number: str) -> FinancialSnapshot:
+        key = _job_key(job_number)
+        if key is None:
+            return FinancialSnapshot.empty(job_number)
+        snap = self._cache.get(key)
+        if snap is None:
+            snap = FinancialSnapshot.empty(job_number)
+            snap.notes = [f"Job {job_number} not found in financial snapshot."]
+        return snap
+
+    def force_refresh(self) -> None:
+        self._cache = {}
+        self._load()

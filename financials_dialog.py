@@ -268,6 +268,8 @@ class FinancialsDialog(QDialog):
 
         self.refresh_btn.setEnabled(False)
         try:
+            if hasattr(self._provider, "force_refresh"):
+                self._provider.force_refresh()
             self._snapshot = self._provider.get_financials(self._job_number)
             self._render_snapshot()
         except Exception as exc:
