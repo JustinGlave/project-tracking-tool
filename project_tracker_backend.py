@@ -40,6 +40,8 @@ class ProjectRecord:
     is_test: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    created_by: str = ""
+    updated_by: str = ""
 
 
 @dataclass(slots=True)
@@ -52,6 +54,7 @@ class TaskRecord:
     completed_date: Optional[str] = None
     is_complete: bool = False
     notes: str = ""
+    updated_by: str = ""
 
 
 @dataclass(slots=True)
@@ -170,6 +173,7 @@ class ProjectTrackerBackend:
     def __init__(self, db_path: str | Path = "project_tracker_data.json") -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.current_user: str = ""
         self._initialize_storage()
 
     def _initialize_storage(self) -> None:
@@ -275,6 +279,8 @@ class ProjectTrackerBackend:
             "is_test": project.is_test,
             "created_at": now,
             "updated_at": now,
+            "created_by": self.current_user,
+            "updated_by": self.current_user,
         }
         data["projects"].append(project_record)
         data["next_project_id"] = new_project_id + 1
@@ -338,6 +344,7 @@ class ProjectTrackerBackend:
             target_project[field_name] = field_value.strip() if isinstance(field_value, str) else field_value
 
         target_project["updated_at"] = self._now_iso()
+        target_project["updated_by"] = self.current_user
         self._save_data(data)
 
     def delete_project(self, project_id: int) -> None:
@@ -431,10 +438,12 @@ class ProjectTrackerBackend:
             "completed_date": normalized_completed_date,
             "is_complete": bool(normalized_completed_date),
             "notes": notes.strip(),
+            "updated_by": self.current_user,
         }
         data["tasks"].append(task_record)
         data["next_task_id"] = new_task_id + 1
         target_project["updated_at"] = self._now_iso()
+        target_project["updated_by"] = self.current_user
         self._save_data(data)
         return new_task_id
 
@@ -483,9 +492,11 @@ class ProjectTrackerBackend:
         for field_name, field_value in updates.items():
             target_task[field_name] = field_value
 
+        target_task["updated_by"] = self.current_user
         owning_project = self._find_project_dict(data, int(target_task["project_id"]))
         if owning_project is not None:
             owning_project["updated_at"] = self._now_iso()
+            owning_project["updated_by"] = self.current_user
 
         self._save_data(data)
 
@@ -501,6 +512,7 @@ class ProjectTrackerBackend:
         owning_project = self._find_project_dict(data, owning_project_id)
         if owning_project is not None:
             owning_project["updated_at"] = self._now_iso()
+            owning_project["updated_by"] = self.current_user
 
         self._save_data(data)
 
@@ -1520,6 +1532,8 @@ class ProjectTrackerBackend:
             is_test=bool(project_dict.get("is_test", False)),
             created_at=project_dict["created_at"],
             updated_at=project_dict["updated_at"],
+            created_by=project_dict.get("created_by", ""),
+            updated_by=project_dict.get("updated_by", ""),
         )
 
     @staticmethod
@@ -1533,6 +1547,7 @@ class ProjectTrackerBackend:
             completed_date=task_dict["completed_date"],
             is_complete=bool(task_dict["is_complete"]),
             notes=task_dict["notes"],
+            updated_by=task_dict.get("updated_by", ""),
         )
 
     @staticmethod

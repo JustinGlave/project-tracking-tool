@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 
 
@@ -29,7 +31,7 @@ def _app_data_path() -> Path:
     return new_path
 from typing import Any, Optional
 
-from PySide6.QtCore import QDate, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
+from PySide6.QtCore import QDate, QFileSystemWatcher, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -63,6 +65,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QToolTip,
+    QTreeWidget,
+    QTreeWidgetItem,
 )
 
 import shutil
@@ -71,8 +75,38 @@ from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
 from financials_excel import ExcelFinancialsProvider, SnapshotFinancialsProvider
+from user_auth import UserManager, UserRecord
 
 PHASES = sorted({item["phase"] for item in DEFAULT_TASKS} | {"General"})
+
+# Fields compared when detecting changes between sessions
+_CHANGE_FIELDS: dict[str, str] = {
+    "job_name":            "Job Name",
+    "job_number":          "Job Number",
+    "project_manager":     "Project Manager",
+    "sales_engineer":      "Sales Engineer",
+    "target_completion":   "Target Completion",
+    "booked_date":         "Booked Date",
+    "contract_value":      "Contract Value",
+    "owner":               "Owner",
+    "contracted_with":     "Contracted With",
+    "general_contractor":  "General Contractor",
+    "liquid_damages":      "Liquid Damages",
+    "warranty_period":     "Warranty Period",
+    "job_subtype":         "Job Sub-Type",
+    "group_ops_manager":   "Group Ops Manager",
+    "group_ops_supervisor":"Group Ops Supervisor",
+}
+
+_LOCAL_SNAPSHOT_PATH = (
+    Path(os.environ.get("APPDATA", Path.home()))
+    / "ATS Inc" / "Project Tracking Tool" / "session_snapshot.json"
+)
+
+_SESSION_PATH = (
+    Path(os.environ.get("APPDATA", Path.home()))
+    / "ATS Inc" / "Project Tracking Tool" / "session.json"
+)
 
 PHASE_COLORS: dict[str, str] = {
     "Pre-Project": "#487cff",
@@ -1043,21 +1077,21 @@ class UpdateBanner(QFrame):
 
         if info.release_notes:
             notes_btn = QPushButton("What's new?")
-            notes_btn.setFixedWidth(100)
+            notes_btn.setFixedWidth(120)
             notes_btn.clicked.connect(lambda: QMessageBox.information(
                 self, f"What's new in v{info.latest_version}",
                 info.release_notes,
             ))
             layout.addWidget(notes_btn)
 
-        install_btn = QPushButton("Install & Restart")
-        install_btn.setFixedWidth(140)
+        install_btn = QPushButton("Install && Restart")
+        install_btn.setFixedWidth(150)
         install_btn.setObjectName("InstallBtn")
         install_btn.clicked.connect(self.install_clicked)
         layout.addWidget(install_btn)
 
         dismiss_btn = QPushButton("✕")
-        dismiss_btn.setFixedWidth(32)
+        dismiss_btn.setFixedWidth(44)
         dismiss_btn.setToolTip("Dismiss")
         dismiss_btn.clicked.connect(self.hide)
         layout.addWidget(dismiss_btn)
@@ -1214,13 +1248,305 @@ class DataLocationDialog(QDialog):
         return self.path_edit.text().strip()
 
 
+class LoginDialog(QDialog):
+    """Prompt the user to log in with username + password."""
+
+    def __init__(self, user_manager: UserManager, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._user_manager = user_manager
+        self._logged_in_user: Optional[UserRecord] = None
+        self.setWindowTitle("Log In")
+        self.setModal(True)
+        self.setFixedWidth(340)
+
+        form = QFormLayout()
+        self._username_edit = QLineEdit()
+        self._username_edit.setPlaceholderText("Username")
+        self._password_edit = QLineEdit()
+        self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._password_edit.setPlaceholderText("Password")
+        self._remember_check = QCheckBox("Remember me on this computer")
+        form.addRow("Username:", self._username_edit)
+        form.addRow("Password:", self._password_edit)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setWordWrap(True)
+        self._error_lbl.setVisible(False)
+
+        login_btn = QPushButton("Log In")
+        login_btn.setDefault(True)
+        login_btn.clicked.connect(self._attempt_login)
+        self._password_edit.returnPressed.connect(self._attempt_login)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(self._remember_check)
+        layout.addWidget(self._error_lbl)
+        layout.addWidget(login_btn)
+
+    def _attempt_login(self) -> None:
+        username = self._username_edit.text().strip()
+        password = self._password_edit.text()
+        user = self._user_manager.authenticate(username, password)
+        if user is None:
+            self._error_lbl.setText("Incorrect username or password.")
+            self._error_lbl.setVisible(True)
+            self._password_edit.clear()
+            return
+        self._logged_in_user = user
+        if self._remember_check.isChecked():
+            _SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(_SESSION_PATH, "w", encoding="utf-8") as f:
+                json.dump({"username": user.username}, f)
+        else:
+            _SESSION_PATH.unlink(missing_ok=True)
+        self.accept()
+
+    def logged_in_user(self) -> Optional[UserRecord]:
+        return self._logged_in_user
+
+
+class ChangePasswordDialog(QDialog):
+    """Force a user to pick a new password (shown when must_change_password is True)."""
+
+    def __init__(self, user_manager: UserManager, username: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._user_manager = user_manager
+        self._username = username
+        self.setWindowTitle("Change Password")
+        self.setModal(True)
+        self.setFixedWidth(360)
+
+        self._new_edit = QLineEdit()
+        self._new_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._new_edit.setPlaceholderText("New password (8+ characters)")
+        self._confirm_edit = QLineEdit()
+        self._confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._confirm_edit.setPlaceholderText("Confirm new password")
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setWordWrap(True)
+        self._error_lbl.setVisible(False)
+
+        save_btn = QPushButton("Save Password")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._save)
+
+        form = QFormLayout()
+        form.addRow("New password:", self._new_edit)
+        form.addRow("Confirm:", self._confirm_edit)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"Hi {username}! You must set a new password before continuing.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        layout.addLayout(form)
+        layout.addWidget(self._error_lbl)
+        layout.addWidget(save_btn)
+
+    def _save(self) -> None:
+        pw = self._new_edit.text()
+        confirm = self._confirm_edit.text()
+        if pw != confirm:
+            self._error_lbl.setText("Passwords do not match.")
+            self._error_lbl.setVisible(True)
+            return
+        if len(pw) < UserManager.MIN_PASSWORD_LENGTH:
+            self._error_lbl.setText(f"Password must be at least {UserManager.MIN_PASSWORD_LENGTH} characters.")
+            self._error_lbl.setVisible(True)
+            return
+        try:
+            self._user_manager.change_password(self._username, pw)
+        except Exception as exc:
+            self._error_lbl.setText(str(exc))
+            self._error_lbl.setVisible(True)
+            return
+        self.accept()
+
+
+class ManageUsersDialog(QDialog):
+    """Admin UI for creating, listing, and deleting user accounts."""
+
+    def __init__(self, user_manager: UserManager, current_user: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._user_manager = user_manager
+        self._current_user = current_user
+        self.setWindowTitle("Manage Users")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        # User list
+        self._user_list = QListWidget()
+        layout.addWidget(QLabel("Users:"))
+        layout.addWidget(self._user_list)
+
+        # Add user row
+        add_row = QHBoxLayout()
+        self._new_username = QLineEdit()
+        self._new_username.setPlaceholderText("New username")
+        self._new_password = QLineEdit()
+        self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._new_password.setPlaceholderText("Temp password (8+ chars)")
+        add_btn = QPushButton("Add User")
+        add_btn.clicked.connect(self._add_user)
+        add_row.addWidget(self._new_username, 2)
+        add_row.addWidget(self._new_password, 2)
+        add_row.addWidget(add_btn)
+        layout.addLayout(add_row)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setWordWrap(True)
+        self._error_lbl.setVisible(False)
+        layout.addWidget(self._error_lbl)
+
+        # Delete / Reset buttons
+        btn_row = QHBoxLayout()
+        del_btn = QPushButton("Delete Selected User")
+        del_btn.clicked.connect(self._delete_user)
+        reset_btn = QPushButton("Reset Password (force change on login)")
+        reset_btn.clicked.connect(self._reset_password)
+        btn_row.addWidget(del_btn)
+        btn_row.addWidget(reset_btn)
+        layout.addLayout(btn_row)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        self._user_list.clear()
+        for username in self._user_manager.list_users():
+            self._user_list.addItem(username)
+
+    def _add_user(self) -> None:
+        username = self._new_username.text().strip()
+        password = self._new_password.text()
+        try:
+            self._user_manager.create_user(username, password, must_change_password=True)
+            self._new_username.clear()
+            self._new_password.clear()
+            self._error_lbl.setVisible(False)
+            self._refresh_list()
+        except ValueError as exc:
+            self._error_lbl.setText(str(exc))
+            self._error_lbl.setVisible(True)
+
+    def _delete_user(self) -> None:
+        item = self._user_list.currentItem()
+        if item is None:
+            return
+        username = item.text()
+        if username.casefold() == self._current_user.casefold():
+            QMessageBox.warning(self, "Cannot Delete", "You cannot delete your own account.")
+            return
+        reply = QMessageBox.question(
+            self, "Delete User",
+            f"Delete user '{username}'? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._user_manager.delete_user(username)
+            self._refresh_list()
+
+    def _reset_password(self) -> None:
+        item = self._user_list.currentItem()
+        if item is None:
+            return
+        username = item.text()
+        new_pw, ok = QLineEdit.getText if False else (None, False)
+        # Use a simple input dialog
+        from PySide6.QtWidgets import QInputDialog
+        new_pw, ok = QInputDialog.getText(
+            self, "Reset Password",
+            f"Enter a temporary password for '{username}':",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not new_pw:
+            return
+        try:
+            self._user_manager.change_password(username, new_pw)
+            # Flag must_change_password again
+            data = self._user_manager._load()
+            key = next((k for k in data if k.casefold() == username.casefold()), None)
+            if key:
+                data[key]["must_change_password"] = True
+                self._user_manager._save(data)
+            QMessageBox.information(self, "Done", f"Password for '{username}' has been reset.")
+        except ValueError as exc:
+            QMessageBox.warning(self, "Error", str(exc))
+
+
+class RecentChangesDialog(QDialog):
+    """Collapsible tree showing what changed in the shared data since last open."""
+
+    def __init__(self, changes: list[dict], since: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Recent Changes")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(320)
+        self.resize(560, 400)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        since_lbl = QLabel(f"Changes since last opened:  {since}")
+        since_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        layout.addWidget(since_lbl)
+
+        tree = QTreeWidget()
+        tree.setHeaderHidden(True)
+        tree.setRootIsDecorated(True)
+        tree.setIndentation(20)
+        tree.setAnimated(True)
+        layout.addWidget(tree)
+
+        for change in changes:
+            is_new = change["type"] == "new"
+            badge = "NEW" if is_new else "UPDATED"
+            badge_color = "#4caf50" if is_new else "#fb923c"
+            by = change.get("updated_by", "")
+            by_suffix = f"  (by {by})" if by else ""
+            label = f"[{badge}]  {change['job_number']}  —  {change['job_name']}{by_suffix}"
+            top = QTreeWidgetItem(tree, [label])
+            top.setForeground(0, QColor(badge_color))
+            font = top.font(0)
+            font.setBold(True)
+            top.setFont(0, font)
+
+            for field_label, old_val, new_val in change["fields"]:
+                if is_new:
+                    text = f"  {field_label}:  {new_val}"
+                else:
+                    old_disp = old_val if old_val else "(empty)"
+                    new_disp = new_val if new_val else "(empty)"
+                    text = f"  {field_label}:  {old_disp}  →  {new_disp}"
+                child = QTreeWidgetItem(top, [text])
+                child.setForeground(0, QColor("#cccccc"))
+
+        tree.collapseAll()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
-    def __init__(self) -> None:
+    def __init__(self, current_user: str = "") -> None:
         super().__init__()
         self._update_ready.connect(self._show_update_banner)
+        self._current_user = current_user
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        self.backend.current_user = current_user
         self.current_project_id: Optional[int] = None
         self._financials_provider: Optional[ExcelFinancialsProvider] = self._build_financials_provider()
         self.current_tasks: list[TaskRecord] = []
@@ -1230,6 +1556,14 @@ class MainWindow(QMainWindow):
         self._sort_ascending: bool = True
         self._div25_url: str = ""
         self._show_test_jobs: bool = False
+
+        # File watcher — auto-refresh when the shared JSON changes
+        self._file_watcher = QFileSystemWatcher(self)
+        self._file_watcher_debounce = QTimer(self)
+        self._file_watcher_debounce.setSingleShot(True)
+        self._file_watcher_debounce.setInterval(1500)  # wait 1.5s after last change
+        self._file_watcher_debounce.timeout.connect(self._on_data_file_changed)
+        self._start_file_watcher()
 
         from version import __version__
         self.setWindowTitle(f"Project Tracking Tool v{__version__}")
@@ -1250,12 +1584,19 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self.refresh_project_list()
         QTimer.singleShot(0, self.refresh_project_list)
+        QTimer.singleShot(200, self._check_recent_changes)
 
         # Warn if running from a cloud-synced folder
         self._check_sync_folder()
 
-        # Check for updates in the background so startup is never delayed.
+        # Check for updates on startup, then every 30 minutes while the app is open.
         threading.Thread(target=self._check_update_bg, daemon=True).start()
+        self._update_poll_timer = QTimer(self)
+        self._update_poll_timer.setInterval(30 * 60 * 1000)  # 30 minutes
+        self._update_poll_timer.timeout.connect(
+            lambda: threading.Thread(target=self._check_update_bg, daemon=True).start()
+        )
+        self._update_poll_timer.start()
 
     def _build_ui(self) -> None:
         central_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
@@ -1276,6 +1617,9 @@ class MainWindow(QMainWindow):
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        user_lbl = QLabel(f"  Logged in as: {self._current_user}" if self._current_user else "")
+        user_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        self.status_bar.addPermanentWidget(user_lbl)
         self.status_bar.showMessage("Ready")
 
         # Update banner — hidden until a new version is detected
@@ -1730,6 +2074,25 @@ class MainWindow(QMainWindow):
         dlg.adjustSize()
         dlg.exec()
 
+    def _start_file_watcher(self) -> None:
+        """Watch the shared data JSON for changes made by other users."""
+        data_path = str(self._resolve_data_path())
+        if data_path not in self._file_watcher.files():
+            self._file_watcher.addPath(data_path)
+        self._file_watcher.fileChanged.connect(self._on_file_watcher_event)
+
+    def _on_file_watcher_event(self, path: str) -> None:
+        # Re-add the path in case OneDrive replaced the file (common with cloud sync)
+        if path not in self._file_watcher.files():
+            self._file_watcher.addPath(path)
+        # Debounce: restart the timer so rapid writes only trigger one refresh
+        self._file_watcher_debounce.start()
+
+    def _on_data_file_changed(self) -> None:
+        """Called after debounce — reload backend and refresh UI."""
+        self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        self.refresh_project_list()
+
     @staticmethod
     def _resolve_data_path() -> Path:
         """Return the data file path — custom shared folder if configured, else default."""
@@ -1787,9 +2150,85 @@ class MainWindow(QMainWindow):
         """Reinitialize the backend from the current resolved path and refresh the UI."""
         self.current_project_id = None
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        self.backend.current_user = self._current_user
+        self._start_file_watcher()
         self.refresh_project_list()
 
     # ── Financials ─────────────────────────────────────────────────────── #
+
+    # ── Recent-changes snapshot ─────────────────────────────────────────── #
+
+    def _save_session_snapshot(self) -> None:
+        """Save a local snapshot of all projects for next-open diff."""
+        try:
+            projects = self.backend.list_projects("", include_test=True)
+            data = {
+                "saved_at": datetime.now().replace(microsecond=0).isoformat(sep=" "),
+                "projects": {
+                    str(p.id): {field: getattr(p, field, "") or "" for field in _CHANGE_FIELDS}
+                    for p in projects
+                },
+            }
+            _LOCAL_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(_LOCAL_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    def _check_recent_changes(self) -> None:
+        """Compare current data against local snapshot; show dialog if anything changed."""
+        if not _LOCAL_SNAPSHOT_PATH.exists():
+            self._save_session_snapshot()
+            return
+
+        try:
+            with open(_LOCAL_SNAPSHOT_PATH, encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except Exception:
+            self._save_session_snapshot()
+            return
+
+        since = snapshot.get("saved_at", "last session")
+        old_projects: dict = snapshot.get("projects", {})
+        current_projects = self.backend.list_projects("", include_test=True)
+
+        changes: list[dict] = []
+        for project in current_projects:
+            pid = str(project.id)
+            if pid not in old_projects:
+                fields = [
+                    (label, "", str(getattr(project, field, "") or ""))
+                    for field, label in _CHANGE_FIELDS.items()
+                    if getattr(project, field, "")
+                ]
+                changes.append({
+                    "type": "new",
+                    "job_number": project.job_number or "—",
+                    "job_name": project.job_name or "—",
+                    "updated_by": project.created_by or "",
+                    "fields": fields,
+                })
+            else:
+                old = old_projects[pid]
+                diffs = [
+                    (label, str(old.get(field, "") or ""), str(getattr(project, field, "") or ""))
+                    for field, label in _CHANGE_FIELDS.items()
+                    if str(old.get(field, "") or "") != str(getattr(project, field, "") or "")
+                ]
+                if diffs:
+                    changes.append({
+                        "type": "updated",
+                        "job_number": project.job_number or "—",
+                        "job_name": project.job_name or "—",
+                        "updated_by": project.updated_by or "",
+                        "fields": diffs,
+                    })
+
+        self._save_session_snapshot()
+
+        if changes:
+            dlg = RecentChangesDialog(changes, since, parent=self)
+            dlg.exec()
 
     @staticmethod
     def _build_financials_provider() -> Optional[ExcelFinancialsProvider | SnapshotFinancialsProvider]:
@@ -1893,6 +2332,9 @@ class MainWindow(QMainWindow):
         info: Optional[UpdateInfo] = getattr(self, "_pending_update_info", None)
         if info is None:
             return
+        # Don't show a second banner if one is already visible
+        if self._update_banner and self._update_banner.isVisible():
+            return
         banner = UpdateBanner(info, self)
         banner.install_clicked.connect(lambda: self._do_install(info))
         self._update_banner = banner
@@ -1920,6 +2362,15 @@ class MainWindow(QMainWindow):
 
     # ── Menu ───────────────────────────────────────────────────────────────────
 
+    def _users_path(self) -> Path:
+        """Return path to users.json, co-located with the data file."""
+        return self.backend.db_path.parent / "users.json"
+
+    def _open_manage_users(self) -> None:
+        um = UserManager(self._users_path())
+        dlg = ManageUsersDialog(um, self._current_user, parent=self)
+        dlg.exec()
+
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
 
@@ -1946,6 +2397,9 @@ class MainWindow(QMainWindow):
         financials_file_action = QAction("Financial Data File...", self)
         financials_file_action.triggered.connect(self._open_financials_file_settings)
 
+        manage_users_action = QAction("Manage Users...", self)
+        manage_users_action.triggered.connect(self._open_manage_users)
+
         file_menu.addAction(new_action)
         file_menu.addAction(import_action)
         file_menu.addSeparator()
@@ -1954,6 +2408,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(data_location_action)
         file_menu.addAction(financials_file_action)
+        file_menu.addAction(manage_users_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -3143,8 +3598,48 @@ def main() -> int:
         apply_dark_theme(app)
     else:
         apply_light_theme(app)
-    window = MainWindow()
-    window.show()
+
+    # ── User login ──────────────────────────────────────────────────────── #
+    # Resolve the users.json path from the configured data folder.
+    custom_folder = str(settings.value("dataFolder", "")).strip()
+    if custom_folder:
+        users_path = Path(custom_folder) / "users.json"
+    else:
+        users_path = _app_data_path().parent / "users.json"
+
+    user_manager = UserManager(users_path)
+    current_user = ""
+
+    if user_manager.has_any_users():
+        # Try remember-me session first
+        auto_logged_in = False
+        if _SESSION_PATH.exists():
+            try:
+                session_data = json.loads(_SESSION_PATH.read_text(encoding="utf-8"))
+                remembered = session_data.get("username", "")
+                if remembered and user_manager.get_user(remembered):
+                    current_user = remembered
+                    auto_logged_in = True
+            except Exception:
+                pass
+
+        if not auto_logged_in:
+            login_dlg = LoginDialog(user_manager)
+            if login_dlg.exec() != QDialog.DialogCode.Accepted:
+                return 0
+            user = login_dlg.logged_in_user()
+            if user is None:
+                return 0
+            current_user = user.username
+            # If first login, force password change
+            if user.must_change_password:
+                chpw_dlg = ChangePasswordDialog(user_manager, current_user)
+                chpw_dlg.exec()  # They must complete this; closing is treated as done
+    # If no users exist yet, the app opens without requiring login so the admin
+    # can set up accounts via File > Manage Users.
+
+    window = MainWindow(current_user=current_user)
+    window.showMaximized()
     return int(app.exec())
 
 
