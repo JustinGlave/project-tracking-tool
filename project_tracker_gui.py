@@ -2343,7 +2343,7 @@ class MainWindow(QMainWindow):
         self.bulk_uncomplete_btn.clicked.connect(self._bulk_uncomplete_tasks)
         top_row.addWidget(self.bulk_uncomplete_btn)
 
-        self.compact_btn = _toolbar_btn("Compact", 100, "Toggle compact row view")
+        self.compact_btn = _toolbar_btn("⊟ Compact", 100, "Toggle compact row view")
         self.compact_btn.setCheckable(True)
         self.compact_btn.clicked.connect(self._toggle_compact_view)
         top_row.addWidget(self.compact_btn)
