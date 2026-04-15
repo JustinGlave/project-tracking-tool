@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _resource_path(filename: str) -> Path:
@@ -29,10 +32,32 @@ def _app_data_path() -> Path:
             shutil.copy2(legacy, new_path)
 
     return new_path
+
+
+def _backup_data_file(data_path: Path) -> None:
+    """Copy the data file to a timestamped backup, keeping the most recent 10 backups."""
+    if not data_path.exists():
+        return
+    backup_dir = data_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = backup_dir / f"project_tracker_data_{timestamp}.json"
+    try:
+        shutil.copy2(data_path, dest)
+    except OSError:
+        logger.exception("Failed to write backup to %s", dest)
+        return
+    # Prune oldest backups, keep last 10
+    backups = sorted(backup_dir.glob("project_tracker_data_*.json"))
+    for old in backups[:-10]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 from typing import Any, Optional
 
 from PySide6.QtCore import QDate, QFileSystemWatcher, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -67,6 +92,8 @@ from PySide6.QtWidgets import (
     QToolTip,
     QTreeWidget,
     QTreeWidgetItem,
+    QStackedWidget,
+    QInputDialog,
 )
 
 import shutil
@@ -257,12 +284,28 @@ class ProjectDialog(QDialog):
         super().accept()
 
 
+class ReorderableTaskTable(QTableWidget):
+    """QTableWidget with internal row drag-drop that emits rowsReordered after a drop."""
+
+    rowsReordered = Signal()
+
+    def __init__(self, rows: int, cols: int, parent: Optional[QWidget] = None) -> None:
+        super().__init__(rows, cols, parent)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropOverwriteMode(False)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event: Any) -> None:  # type: ignore[override]
+        super().dropEvent(event)
+        self.rowsReordered.emit()
+
+
 class TaskDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None, task: Optional[TaskRecord] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Task Details")
         self.setModal(True)
-        self.resize(440, 260)
+        self.resize(440, 300)
 
         self.task_name_edit = QLineEdit(task.task_name if task else "")
         self.phase_combo = QComboBox()
@@ -271,6 +314,20 @@ class TaskDialog(QDialog):
             phase_index = self.phase_combo.findText(task.phase)
             if phase_index >= 0:
                 self.phase_combo.setCurrentIndex(phase_index)
+
+        self.due_date_check = QCheckBox("Has due date")
+        self.due_date_edit = QDateEdit()
+        self.due_date_edit.setCalendarPopup(True)
+        self.due_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.due_date_edit.setDate(QDate.currentDate())
+        if task and task.due_date:
+            self.due_date_check.setChecked(True)
+            parsed = QDate.fromString(task.due_date, "yyyy-MM-dd")
+            if parsed.isValid():
+                self.due_date_edit.setDate(parsed)
+        else:
+            self.due_date_edit.setEnabled(False)
+        self.due_date_check.toggled.connect(self.due_date_edit.setEnabled)
 
         self.completed_check = QCheckBox("Completed")
         self.completed_check.setChecked(task.is_complete if task else False)
@@ -291,6 +348,8 @@ class TaskDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.addRow("Task", self.task_name_edit)
         form_layout.addRow("Phase", self.phase_combo)
+        form_layout.addRow("Due date", self.due_date_check)
+        form_layout.addRow("", self.due_date_edit)
         form_layout.addRow("Status", self.completed_check)
         form_layout.addRow("Completed date", self.completed_date_edit)
         form_layout.addRow("Notes", self.notes_edit)
@@ -307,9 +366,11 @@ class TaskDialog(QDialog):
 
     def get_data(self) -> dict[str, Any]:
         completed = self.completed_check.isChecked()
+        has_due = self.due_date_check.isChecked()
         return {
             "task_name": self.task_name_edit.text().strip(),
             "phase": self.phase_combo.currentText(),
+            "due_date": self.due_date_edit.date().toString("yyyy-MM-dd") if has_due else None,
             "is_complete": bool(completed),
             "completed_date": self.completed_date_edit.date().toString("yyyy-MM-dd") if completed else None,
             "notes": self.notes_edit.toPlainText().strip(),
@@ -378,10 +439,12 @@ class NotesWindow(QDialog):
     """Floating notes log for a project — matches the Excel Job Progress Notes layout."""
 
     def __init__(self, project_id: int, project_name: str,
-                 backend: Any, parent: Optional[QWidget] = None) -> None:
+                 backend: Any, view_only: bool = False,
+                 parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.project_id   = project_id
         self.backend      = backend
+        self._view_only   = view_only
         self.setWindowTitle(f"Job Progress Notes — {project_name}")
         self.resize(1000, 560)
         self.setMinimumSize(700, 400)
@@ -395,10 +458,11 @@ class NotesWindow(QDialog):
         title_lbl.setObjectName("SectionTitle")
         toolbar.addWidget(title_lbl)
         toolbar.addStretch()
-        add_btn = QPushButton("+ Add Note")
-        add_btn.setFixedWidth(110)
-        add_btn.clicked.connect(self._add_note)
-        toolbar.addWidget(add_btn)
+        if not view_only:
+            add_btn = QPushButton("+ Add Note")
+            add_btn.setFixedWidth(110)
+            add_btn.clicked.connect(self._add_note)
+            toolbar.addWidget(add_btn)
         layout.addLayout(toolbar)
 
         # Table
@@ -412,7 +476,8 @@ class NotesWindow(QDialog):
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.setAlternatingRowColors(False)
-        self.table.doubleClicked.connect(self._edit_selected)
+        if not view_only:
+            self.table.doubleClicked.connect(self._edit_selected)
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionsMovable(False)
@@ -428,17 +493,18 @@ class NotesWindow(QDialog):
 
         # Bottom buttons
         btn_row = QHBoxLayout()
-        edit_btn   = QPushButton("Edit")
-        edit_btn.setFixedWidth(90)
-        edit_btn.clicked.connect(self._edit_selected)
-        del_btn    = QPushButton("Delete")
-        del_btn.setFixedWidth(90)
-        del_btn.clicked.connect(self._delete_selected)
+        if not view_only:
+            edit_btn = QPushButton("Edit")
+            edit_btn.setFixedWidth(90)
+            edit_btn.clicked.connect(self._edit_selected)
+            del_btn = QPushButton("Delete")
+            del_btn.setFixedWidth(90)
+            del_btn.clicked.connect(self._delete_selected)
+            btn_row.addWidget(edit_btn)
+            btn_row.addWidget(del_btn)
         close_btn  = QPushButton("Close")
         close_btn.setFixedWidth(90)
         close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(edit_btn)
-        btn_row.addWidget(del_btn)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
@@ -481,6 +547,8 @@ class NotesWindow(QDialog):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _add_note(self) -> None:
+        if self._view_only:
+            return
         dlg = NoteDialog(self)
         if dlg.exec() != int(QDialog.DialogCode.Accepted):
             return
@@ -490,6 +558,8 @@ class NotesWindow(QDialog):
         self._refresh()
 
     def _edit_selected(self) -> None:
+        if self._view_only:
+            return
         note_id = self._selected_id()
         if note_id is None:
             return
@@ -504,6 +574,8 @@ class NotesWindow(QDialog):
         self._refresh()
 
     def _delete_selected(self) -> None:
+        if self._view_only:
+            return
         note_id = self._selected_id()
         if note_id is None:
             return
@@ -622,10 +694,12 @@ class ChangeOrderWindow(QDialog):
     }
 
     def __init__(self, project_id: int, project_name: str,
-                 backend: Any, parent: Optional[QWidget] = None) -> None:
+                 backend: Any, view_only: bool = False,
+                 parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.project_id = project_id
         self.backend    = backend
+        self._view_only = view_only
         self.setWindowTitle(f"Change Order Log — {project_name}")
         self.resize(1200, 600)
         self.setMinimumSize(900, 400)
@@ -674,11 +748,12 @@ class ChangeOrderWindow(QDialog):
 
         # ── Toolbar ───────────────────────────────────────────────────────────
         toolbar = QHBoxLayout()
-        add_btn = QPushButton("+ Add CO")
-        add_btn.setFixedWidth(100)
-        add_btn.clicked.connect(self._add_co)
         toolbar.addStretch()
-        toolbar.addWidget(add_btn)
+        if not view_only:
+            add_btn = QPushButton("+ Add CO")
+            add_btn.setFixedWidth(100)
+            add_btn.clicked.connect(self._add_co)
+            toolbar.addWidget(add_btn)
         layout.addLayout(toolbar)
 
         # ── Table ─────────────────────────────────────────────────────────────
@@ -696,7 +771,8 @@ class ChangeOrderWindow(QDialog):
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.table.doubleClicked.connect(self._edit_selected)
+        if not view_only:
+            self.table.doubleClicked.connect(self._edit_selected)
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionsMovable(False)
@@ -724,10 +800,12 @@ class ChangeOrderWindow(QDialog):
 
         # ── Bottom buttons ────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        edit_btn  = QPushButton("Edit");   edit_btn.setFixedWidth(80);  edit_btn.clicked.connect(self._edit_selected)
-        del_btn   = QPushButton("Delete"); del_btn.setFixedWidth(80);   del_btn.clicked.connect(self._delete_selected)
+        if not view_only:
+            edit_btn = QPushButton("Edit");   edit_btn.setFixedWidth(80);  edit_btn.clicked.connect(self._edit_selected)
+            del_btn  = QPushButton("Delete"); del_btn.setFixedWidth(80);   del_btn.clicked.connect(self._delete_selected)
+            btn_row.addWidget(edit_btn)
+            btn_row.addWidget(del_btn)
         close_btn = QPushButton("Close");  close_btn.setFixedWidth(80); close_btn.clicked.connect(self.accept)
-        btn_row.addWidget(edit_btn); btn_row.addWidget(del_btn)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
@@ -780,6 +858,8 @@ class ChangeOrderWindow(QDialog):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _add_co(self) -> None:
+        if self._view_only:
+            return
         dlg = ChangeOrderDialog(self)
         if dlg.exec() != int(QDialog.DialogCode.Accepted):
             return
@@ -787,6 +867,8 @@ class ChangeOrderWindow(QDialog):
         self._refresh()
 
     def _edit_selected(self) -> None:
+        if self._view_only:
+            return
         co_id = self._selected_id()
         if co_id is None:
             return
@@ -801,6 +883,8 @@ class ChangeOrderWindow(QDialog):
         self._refresh()
 
     def _delete_selected(self) -> None:
+        if self._view_only:
+            return
         co_id = self._selected_id()
         if co_id is None:
             return
@@ -1279,11 +1363,16 @@ class LoginDialog(QDialog):
         login_btn.clicked.connect(self._attempt_login)
         self._password_edit.returnPressed.connect(self._attempt_login)
 
+        forgot_lbl = QLabel("Forgot your password? Contact your administrator.")
+        forgot_lbl.setStyleSheet("color: #9ca3af; font-size: 11px;")
+        forgot_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self._remember_check)
         layout.addWidget(self._error_lbl)
         layout.addWidget(login_btn)
+        layout.addWidget(forgot_lbl)
 
     def _attempt_login(self) -> None:
         username = self._username_edit.text().strip()
@@ -1366,8 +1455,71 @@ class ChangePasswordDialog(QDialog):
         self.accept()
 
 
+class SelfChangePasswordDialog(QDialog):
+    """Let any logged-in user change their own password (requires current password)."""
+
+    def __init__(self, user_manager: UserManager, username: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._user_manager = user_manager
+        self._username = username
+        self.setWindowTitle("Change My Password")
+        self.setModal(True)
+        self.setFixedWidth(380)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Changing password for: <b>{username}</b>"))
+
+        form = QFormLayout()
+        self._current_pw = QLineEdit()
+        self._current_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self._new_pw = QLineEdit()
+        self._new_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self._confirm_pw = QLineEdit()
+        self._confirm_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Current password:", self._current_pw)
+        form.addRow("New password:", self._new_pw)
+        form.addRow("Confirm new password:", self._confirm_pw)
+        layout.addLayout(form)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setWordWrap(True)
+        self._error_lbl.setVisible(False)
+        layout.addWidget(self._error_lbl)
+
+        save_btn = QPushButton("Save Password")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._save)
+        layout.addWidget(save_btn)
+
+    def _save(self) -> None:
+        current = self._current_pw.text()
+        new_pw = self._new_pw.text()
+        confirm = self._confirm_pw.text()
+
+        if self._user_manager.authenticate(self._username, current) is None:
+            self._error_lbl.setText("Current password is incorrect.")
+            self._error_lbl.setVisible(True)
+            self._current_pw.clear()
+            return
+        if new_pw != confirm:
+            self._error_lbl.setText("New passwords do not match.")
+            self._error_lbl.setVisible(True)
+            return
+        try:
+            self._user_manager.change_password(self._username, new_pw)
+            QMessageBox.information(self, "Done", "Password changed successfully.")
+            self.accept()
+        except ValueError as exc:
+            self._error_lbl.setText(str(exc))
+            self._error_lbl.setVisible(True)
+
+
 class ManageUsersDialog(QDialog):
-    """Admin UI for creating, listing, and deleting user accounts."""
+    """Admin UI for creating, listing, and managing user accounts."""
+
+    _ROLE_LABELS = ["User", "View Only", "Admin"]
+    _ROLE_KEYS = ["user", "view_only", "admin"]
 
     def __init__(self, user_manager: UserManager, current_user: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -1375,13 +1527,13 @@ class ManageUsersDialog(QDialog):
         self._current_user = current_user
         self.setWindowTitle("Manage Users")
         self.setModal(True)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(460)
 
         layout = QVBoxLayout(self)
 
-        # User list
-        self._user_list = QListWidget()
+        # User list (shows username + role)
         layout.addWidget(QLabel("Users:"))
+        self._user_list = QListWidget()
         layout.addWidget(self._user_list)
 
         # Add user row
@@ -1391,10 +1543,14 @@ class ManageUsersDialog(QDialog):
         self._new_password = QLineEdit()
         self._new_password.setEchoMode(QLineEdit.EchoMode.Password)
         self._new_password.setPlaceholderText("Temp password (8+ chars)")
+        self._new_role_combo = QComboBox()
+        for label, key in zip(self._ROLE_LABELS, self._ROLE_KEYS):
+            self._new_role_combo.addItem(label, key)
         add_btn = QPushButton("Add User")
         add_btn.clicked.connect(self._add_user)
         add_row.addWidget(self._new_username, 2)
         add_row.addWidget(self._new_password, 2)
+        add_row.addWidget(self._new_role_combo, 1)
         add_row.addWidget(add_btn)
         layout.addLayout(add_row)
 
@@ -1404,14 +1560,18 @@ class ManageUsersDialog(QDialog):
         self._error_lbl.setVisible(False)
         layout.addWidget(self._error_lbl)
 
-        # Delete / Reset buttons
+        # Action buttons
         btn_row = QHBoxLayout()
         del_btn = QPushButton("Delete Selected User")
         del_btn.clicked.connect(self._delete_user)
-        reset_btn = QPushButton("Reset Password (force change on login)")
+        reset_btn = QPushButton("Reset Password")
+        reset_btn.setToolTip("Set a temporary password — user must change it on next login")
         reset_btn.clicked.connect(self._reset_password)
+        role_btn = QPushButton("Change Role...")
+        role_btn.clicked.connect(self._change_role)
         btn_row.addWidget(del_btn)
         btn_row.addWidget(reset_btn)
+        btn_row.addWidget(role_btn)
         layout.addLayout(btn_row)
 
         close_btn = QPushButton("Close")
@@ -1420,18 +1580,31 @@ class ManageUsersDialog(QDialog):
 
         self._refresh_list()
 
+    def _selected_username(self) -> Optional[str]:
+        item = self._user_list.currentItem()
+        if item is None:
+            return None
+        return item.data(Qt.ItemDataRole.UserRole)
+
     def _refresh_list(self) -> None:
+        from user_auth import ROLE_LABELS
         self._user_list.clear()
         for username in self._user_manager.list_users():
-            self._user_list.addItem(username)
+            user = self._user_manager.get_user(username)
+            role_label = ROLE_LABELS.get(user.role if user else "user", "User")
+            item = QListWidgetItem(f"{username}  [{role_label}]")
+            item.setData(Qt.ItemDataRole.UserRole, username)
+            self._user_list.addItem(item)
 
     def _add_user(self) -> None:
         username = self._new_username.text().strip()
         password = self._new_password.text()
+        role = self._new_role_combo.currentData() or "user"
         try:
-            self._user_manager.create_user(username, password, must_change_password=True)
+            self._user_manager.create_user(username, password, must_change_password=True, role=role)
             self._new_username.clear()
             self._new_password.clear()
+            self._new_role_combo.setCurrentIndex(0)
             self._error_lbl.setVisible(False)
             self._refresh_list()
         except ValueError as exc:
@@ -1439,10 +1612,9 @@ class ManageUsersDialog(QDialog):
             self._error_lbl.setVisible(True)
 
     def _delete_user(self) -> None:
-        item = self._user_list.currentItem()
-        if item is None:
+        username = self._selected_username()
+        if username is None:
             return
-        username = item.text()
         if username.casefold() == self._current_user.casefold():
             QMessageBox.warning(self, "Cannot Delete", "You cannot delete your own account.")
             return
@@ -1452,17 +1624,17 @@ class ManageUsersDialog(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._user_manager.delete_user(username)
+            try:
+                self._user_manager.delete_user(username)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Cannot Delete", str(exc))
+                return
             self._refresh_list()
 
     def _reset_password(self) -> None:
-        item = self._user_list.currentItem()
-        if item is None:
+        username = self._selected_username()
+        if username is None:
             return
-        username = item.text()
-        new_pw, ok = QLineEdit.getText if False else (None, False)
-        # Use a simple input dialog
-        from PySide6.QtWidgets import QInputDialog
         new_pw, ok = QInputDialog.getText(
             self, "Reset Password",
             f"Enter a temporary password for '{username}':",
@@ -1471,16 +1643,42 @@ class ManageUsersDialog(QDialog):
         if not ok or not new_pw:
             return
         try:
-            self._user_manager.change_password(username, new_pw)
-            # Flag must_change_password again
-            data = self._user_manager._load()
-            key = next((k for k in data if k.casefold() == username.casefold()), None)
-            if key:
-                data[key]["must_change_password"] = True
-                self._user_manager._save(data)
-            QMessageBox.information(self, "Done", f"Password for '{username}' has been reset.")
+            self._user_manager.reset_password(username, new_pw)
+            QMessageBox.information(self, "Done", f"Password for '{username}' has been reset.\nThey will be prompted to set a new one on next login.")
         except ValueError as exc:
             QMessageBox.warning(self, "Error", str(exc))
+
+    def _change_role(self) -> None:
+        username = self._selected_username()
+        if username is None:
+            return
+        user = self._user_manager.get_user(username)
+        if user is None:
+            return
+        # Prevent demoting the last admin
+        if user.role == "admin":
+            all_users = self._user_manager.list_users()
+            admin_count = sum(
+                1 for u in all_users
+                if (rec := self._user_manager.get_user(u)) and rec.role == "admin"
+            )
+            if admin_count <= 1:
+                QMessageBox.warning(
+                    self, "Cannot Change Role",
+                    "There must be at least one administrator. Assign another admin first."
+                )
+                return
+        current_idx = self._ROLE_KEYS.index(user.role) if user.role in self._ROLE_KEYS else 0
+        chosen, ok = QInputDialog.getItem(
+            self, "Change Role",
+            f"Select a new role for '{username}':",
+            self._ROLE_LABELS, current_idx, False,
+        )
+        if not ok:
+            return
+        new_role = self._ROLE_KEYS[self._ROLE_LABELS.index(chosen)]
+        self._user_manager.set_role(username, new_role)
+        self._refresh_list()
 
 
 class RecentChangesDialog(QDialog):
@@ -1538,6 +1736,169 @@ class RecentChangesDialog(QDialog):
         layout.addWidget(close_btn)
 
 
+class ActivityLogDialog(QDialog):
+    """Log of all activity for a project — newest entries first.
+    Admin users see a Remove button on each row."""
+
+    _ACTION_COLORS = {
+        "created":     "#4caf50",
+        "completed":   "#2196f3",
+        "updated":     "#fb923c",
+        "deleted":     "#ef5350",
+        "uncompleted": "#9e9e9e",
+    }
+
+    def __init__(
+        self,
+        activities: list,
+        project_name: str,
+        backend: Any = None,
+        is_admin: bool = False,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._backend = backend
+        self._is_admin = is_admin
+        self._activities = list(activities)
+        self._project_name = project_name
+
+        self.setWindowTitle(f"Activity Log — {project_name}")
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(420)
+        self.resize(800 if is_admin else 760, 500)
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setSpacing(8)
+
+        self._count_lbl = QLabel()
+        self._count_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        self._layout.addWidget(self._count_lbl)
+
+        col_count = 6 if is_admin else 5
+        self._table = QTableWidget(0, col_count)
+        headers = ["Timestamp", "User", "Action", "Item", "Details"]
+        if is_admin:
+            headers.append("")
+        self._table.setHorizontalHeaderLabels(headers)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._table.setColumnWidth(0, 155)
+        self._table.setColumnWidth(1, 100)
+        self._table.setColumnWidth(2, 90)
+        if is_admin:
+            self._table.setColumnWidth(5, 90)
+            self._table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+            self._table.verticalHeader().setDefaultSectionSize(32)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._layout.addWidget(self._table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        self._layout.addWidget(close_btn)
+
+        self._populate()
+
+    def _populate(self) -> None:
+        self._table.setRowCount(0)
+        self._count_lbl.setText(
+            f"{len(self._activities)} event(s)" if self._activities else "No activity recorded yet."
+        )
+        for row, act in enumerate(self._activities):
+            self._table.insertRow(row)
+            color = QColor(self._ACTION_COLORS.get(act.action, "#888888"))
+            entity_label = f"[{act.entity_type.title()}] {act.entity_name}"
+            for col, val in enumerate([act.timestamp, act.user, act.action, entity_label, act.details]):
+                item = QTableWidgetItem(str(val))
+                if col == 2:
+                    item.setForeground(color)
+                self._table.setItem(row, col, item)
+
+            if self._is_admin:
+                remove_btn = QPushButton("Remove")
+                remove_btn.setFixedSize(80, 26)
+                remove_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
+                remove_btn.setProperty("activity_id", act.id)
+                remove_btn.clicked.connect(self._on_remove)
+                self._table.setCellWidget(row, 5, remove_btn)
+
+    def _on_remove(self) -> None:
+        btn = self.sender()
+        activity_id = btn.property("activity_id")
+        reply = QMessageBox.question(
+            self, "Remove Entry",
+            "Remove this activity log entry? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._backend is not None:
+            self._backend.delete_activity(activity_id)
+        self._activities = [a for a in self._activities if a.id != activity_id]
+        self._populate()
+
+
+class BulkExportDialog(QDialog):
+    """Let the user pick multiple projects to export into one Excel workbook."""
+
+    def __init__(self, projects: list, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Bulk Export to Excel")
+        self.setMinimumWidth(460)
+        self.setMinimumHeight(380)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        layout.addWidget(QLabel("Select projects to export:"))
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        for proj in projects:
+            display = f"{proj.job_number}  —  {proj.job_name}" if proj.job_number else proj.job_name
+            item = QListWidgetItem(display)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, proj.id)
+            self._list.addItem(item)
+        layout.addWidget(self._list)
+
+        btn_row = QHBoxLayout()
+        sel_all = QPushButton("Select All")
+        sel_none = QPushButton("Select None")
+        sel_all.clicked.connect(self._select_all)
+        sel_none.clicked.connect(self._select_none)
+        btn_row.addWidget(sel_all)
+        btn_row.addWidget(sel_none)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel  # type: ignore[arg-type]
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _select_all(self) -> None:
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(Qt.CheckState.Checked)
+
+    def _select_none(self) -> None:
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def selected_ids(self) -> list[int]:
+        ids = []
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                ids.append(item.data(Qt.ItemDataRole.UserRole))
+        return ids
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
@@ -1556,6 +1917,7 @@ class MainWindow(QMainWindow):
         self._sort_ascending: bool = True
         self._div25_url: str = ""
         self._show_test_jobs: bool = False
+        self._compact_mode: bool = False
 
         # File watcher — auto-refresh when the shared JSON changes
         self._file_watcher = QFileSystemWatcher(self)
@@ -1582,6 +1944,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._build_shortcuts()
+        if self._current_user_view_only():
+            self._apply_view_only_restrictions()
         self.refresh_project_list()
         QTimer.singleShot(0, self.refresh_project_list)
         QTimer.singleShot(200, self._check_recent_changes)
@@ -1599,31 +1963,70 @@ class MainWindow(QMainWindow):
         self._update_poll_timer.start()
 
     def _build_ui(self) -> None:
-        central_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
-        self.setCentralWidget(central_widget)
+        self._stack = QStackedWidget()
+        self.setCentralWidget(self._stack)
 
-        root_layout = QHBoxLayout(central_widget)
+        # Page 0: logged-out screen
+        self._stack.addWidget(self._build_logged_out_panel())
+
+        # Page 1: full app content
+        app_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
+        root_layout = QHBoxLayout(app_widget)
         root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.setSpacing(0)
 
         sidebar = self._build_sidebar()
-        sidebar.setFixedWidth(220)
-
-        handle = ResizeHandle(sidebar, central_widget)
+        sidebar.setFixedWidth(242)
 
         root_layout.addWidget(sidebar)
-        root_layout.addWidget(handle)
         root_layout.addWidget(self._build_main_panel(), 1)
+        self._stack.addWidget(app_widget)
 
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        user_lbl = QLabel(f"  Logged in as: {self._current_user}" if self._current_user else "")
-        user_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
-        self.status_bar.addPermanentWidget(user_lbl)
+        self._user_status_lbl = QLabel()
+        self._user_status_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        self.status_bar.addPermanentWidget(self._user_status_lbl)
         self.status_bar.showMessage("Ready")
-
-        # Update banner — hidden until a new version is detected
         self._update_banner: Optional[UpdateBanner] = None
+
+        # Show correct initial page
+        um = UserManager(self._users_path())
+        if self._current_user or not um.has_any_users():
+            self._stack.setCurrentIndex(1)
+            if self._current_user:
+                self._update_status_bar_user()
+        else:
+            self._stack.setCurrentIndex(0)
+
+    def _build_logged_out_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        title = QLabel("Project Tracking Tool")
+        title.setObjectName("SectionTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 18pt; font-weight: bold;")
+
+        msg = QLabel("You are logged out.")
+        msg.setStyleSheet("font-size: 13pt; color: #888888;")
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        login_btn = QPushButton("Log In")
+        login_btn.setFixedWidth(140)
+        login_btn.setFixedHeight(36)
+        login_btn.clicked.connect(self._do_login)
+
+        layout.addStretch(1)
+        layout.addWidget(title)
+        layout.addSpacing(12)
+        layout.addWidget(msg)
+        layout.addSpacing(20)
+        layout.addWidget(login_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch(1)
+
+        return panel
 
     def _build_sidebar(self) -> QWidget:
         panel = QFrame()
@@ -1691,12 +2094,20 @@ class MainWindow(QMainWindow):
         secondary_row = QHBoxLayout()
         self.edit_project_btn = QPushButton("Edit")
         self.edit_project_btn.setMinimumWidth(72)
+        self.edit_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.edit_project_btn.clicked.connect(self.edit_current_project)
         self.delete_project_btn = QPushButton("Delete")
         self.delete_project_btn.setMinimumWidth(72)
+        self.delete_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.delete_project_btn.clicked.connect(self.delete_current_project)
+        self.pin_project_btn = QPushButton("📌 Pin")
+        self.pin_project_btn.setMinimumWidth(72)
+        self.pin_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
+        self.pin_project_btn.setToolTip("Pin this project to the top of the list")
+        self.pin_project_btn.clicked.connect(self._toggle_pin)
         secondary_row.addWidget(self.edit_project_btn)
         secondary_row.addWidget(self.delete_project_btn)
+        secondary_row.addWidget(self.pin_project_btn)
         panel_layout.addLayout(secondary_row)
 
         return panel
@@ -1845,48 +2256,69 @@ class MainWindow(QMainWindow):
         wrapper_layout.setSpacing(12)
 
         top_row = QHBoxLayout()
+        top_row.setSpacing(4)
         title_label = QLabel("Tasks")
         title_label.setObjectName("SectionTitle")
         top_row.addWidget(title_label)
 
-        self.notes_btn = QPushButton("📝 Notes")
-        self.notes_btn.setFixedWidth(100)
-        self.notes_btn.setToolTip("Open job progress notes")
+        _tf = QFont()
+        _tf.setPointSize(9)
+        _sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+        def _toolbar_btn(label: str, max_w: int, tip: str = "") -> QPushButton:
+            btn = QPushButton(label)
+            btn.setMaximumWidth(max_w)
+            btn.setMinimumWidth(36)
+            btn.setFont(_tf)
+            btn.setSizePolicy(_sp)
+            btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
+            if tip:
+                btn.setToolTip(tip)
+            return btn
+
+        self.notes_btn = _toolbar_btn("📝 Notes", 100, "Open job progress notes")
         self.notes_btn.clicked.connect(self._open_notes)
         top_row.addWidget(self.notes_btn)
 
-        self.co_btn = QPushButton("📋 Change Orders")
-        self.co_btn.setFixedWidth(140)
-        self.co_btn.setToolTip("Open change order log")
+        self.co_btn = _toolbar_btn("🚀 CO Log", 114, "Open change order log")
         self.co_btn.clicked.connect(self._open_change_orders)
         top_row.addWidget(self.co_btn)
 
-        self.project_info_btn = QPushButton("Project Info")
-        self.project_info_btn.setFixedWidth(110)
-        self.project_info_btn.setToolTip("View all project details")
+        self.project_info_btn = _toolbar_btn("ℹ️ Info", 92, "View all project details")
         self.project_info_btn.clicked.connect(self._show_project_info)
         top_row.addWidget(self.project_info_btn)
 
-        self.financials_btn = QPushButton("Financials")
-        self.financials_btn.setFixedWidth(100)
-        self.financials_btn.setToolTip("View financial data from ODIN")
+        self.financials_btn = _toolbar_btn("💰 Financials", 130, "View financial data from ODIN")
         self.financials_btn.clicked.connect(self._open_financials)
         top_row.addWidget(self.financials_btn)
+
+        self.activity_log_btn = _toolbar_btn("📜 Activity", 116, "View activity log for this project")
+        self.activity_log_btn.clicked.connect(self._open_activity_log)
+        top_row.addWidget(self.activity_log_btn)
 
         top_row.addStretch(1)
 
         self.phase_filter = QComboBox()
+        self.phase_filter.setMaximumWidth(118)
+        self.phase_filter.setMinimumWidth(36)
+        self.phase_filter.setSizePolicy(_sp)
+        self.phase_filter.setFont(_tf)
+        self.phase_filter.setStyleSheet("padding-left: 3px; padding-right: 3px;")
         self.phase_filter.addItem("All phases")
         self.phase_filter.addItems(PHASES)
         self.phase_filter.currentTextChanged.connect(self.populate_tasks)
         top_row.addWidget(self.phase_filter)
 
-        self.add_task_btn = QPushButton("Add Task")
-        self.add_task_btn.setFixedWidth(100)
+        self.add_task_btn = _toolbar_btn("Add Task", 92)
         self.add_task_btn.clicked.connect(self.add_task)
         top_row.addWidget(self.add_task_btn)
 
         self.task_search_edit = QLineEdit()
+        self.task_search_edit.setMaximumWidth(110)
+        self.task_search_edit.setMinimumWidth(36)
+        self.task_search_edit.setSizePolicy(_sp)
+        self.task_search_edit.setFont(_tf)
+        self.task_search_edit.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.task_search_edit.setPlaceholderText("Filter tasks...")
         self.task_search_edit.textChanged.connect(self.populate_tasks)
         top_row.addWidget(self.task_search_edit)
@@ -1895,15 +2327,32 @@ class MainWindow(QMainWindow):
         self.template_apply_combo.addItem("Templates")
         self.template_apply_combo.addItem("Standard", "standard")
         self.template_apply_combo.addItem("Phoenix", "phoenix")
-        self.template_apply_combo.setFixedWidth(110)
+        self.template_apply_combo.setMaximumWidth(108)
+        self.template_apply_combo.setMinimumWidth(36)
+        self.template_apply_combo.setSizePolicy(_sp)
+        self.template_apply_combo.setFont(_tf)
+        self.template_apply_combo.setStyleSheet("padding-left: 3px; padding-right: 3px;")
         self.template_apply_combo.activated.connect(self._apply_template_from_combo)
         top_row.addWidget(self.template_apply_combo)
 
+        self.bulk_complete_btn = _toolbar_btn("✓ All", 68, "Mark all visible tasks complete")
+        self.bulk_complete_btn.clicked.connect(self._bulk_complete_tasks)
+        top_row.addWidget(self.bulk_complete_btn)
+
+        self.bulk_uncomplete_btn = _toolbar_btn("✗ All", 68, "Mark all visible tasks incomplete")
+        self.bulk_uncomplete_btn.clicked.connect(self._bulk_uncomplete_tasks)
+        top_row.addWidget(self.bulk_uncomplete_btn)
+
+        self.compact_btn = _toolbar_btn("Compact", 100, "Toggle compact row view")
+        self.compact_btn.setCheckable(True)
+        self.compact_btn.clicked.connect(self._toggle_compact_view)
+        top_row.addWidget(self.compact_btn)
+
         wrapper_layout.addLayout(top_row)
 
-        self.task_table = QTableWidget(0, 6)
+        self.task_table = ReorderableTaskTable(0, 7)
         self.task_table.setHorizontalHeaderLabels(
-            ["Done", "Task", "Phase", "Completed Date", "Notes", "Actions"]
+            ["Done", "Task", "Phase", "Due Date", "Completed Date", "Notes", "Actions"]
         )
         self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1921,17 +2370,20 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
         # Default column widths
-        header.resizeSection(1, 300)
-        header.resizeSection(2, 120)
-        header.resizeSection(3, 140)
+        header.resizeSection(1, 280)
+        header.resizeSection(2, 110)
+        header.resizeSection(3, 110)
+        header.resizeSection(4, 130)
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._on_header_clicked)
 
         self.task_table.doubleClicked.connect(self._on_task_double_clicked)
+        self.task_table.rowsReordered.connect(self._on_tasks_reordered)
 
         wrapper_layout.addWidget(self.task_table, 1)
         return wrapper
@@ -1946,7 +2398,8 @@ class MainWindow(QMainWindow):
             return
         project = self.backend.get_project(self.current_project_id)
         name = project.job_name if project else "Project"
-        dlg = NotesWindow(self.current_project_id, name, self.backend, self)
+        dlg = NotesWindow(self.current_project_id, name, self.backend,
+                          view_only=self._current_user_view_only(), parent=self)
         dlg.exec()
 
     def _open_change_orders(self) -> None:
@@ -1955,10 +2408,29 @@ class MainWindow(QMainWindow):
             return
         project = self.backend.get_project(self.current_project_id)
         name = project.job_name if project else "Project"
-        dlg = ChangeOrderWindow(self.current_project_id, name, self.backend, self)
+        dlg = ChangeOrderWindow(self.current_project_id, name, self.backend,
+                                view_only=self._current_user_view_only(), parent=self)
+        dlg.exec()
+
+    def _open_activity_log(self) -> None:
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        name = project.job_name if project else "Project"
+        activities = self.backend.list_activity(self.current_project_id)
+        dlg = ActivityLogDialog(
+            activities, name,
+            backend=self.backend,
+            is_admin=self._current_user_is_admin(),
+            parent=self,
+        )
         dlg.exec()
 
     def _apply_template_from_combo(self, index: int) -> None:
+        if self._current_user_view_only():
+            self.template_apply_combo.setCurrentIndex(0)
+            return
         if index == 0:
             return  # "Templates" header selected — do nothing
         if self.current_project_id is None:
@@ -1991,6 +2463,7 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Project Info — {project.job_name}")
         dlg.setModal(True)
+        dlg.resize(620, 600)
 
         inner = QWidget()
         form = QFormLayout(inner)
@@ -2001,32 +2474,34 @@ class MainWindow(QMainWindow):
         def _row(label: str, value: str) -> None:
             lbl = QLabel(value or "—")
             lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            lbl.setWordWrap(True)
             lbl.setMinimumWidth(300)
             form.addRow(f"<b>{label}</b>", lbl)
 
-        _row("Job Number",          project.job_number)
-        _row("Job Name",            project.job_name)
-        _row("Project Manager",     project.project_manager)
-        _row("Sales Engineer",      project.sales_engineer)
-        _row("Target Completion",   project.target_completion or "")
-        _row("Booked Date",         project.booked_date)
-        _row("Contract Value",      project.contract_value)
-        _row("Liquid Damages",      project.liquid_damages)
-        _row("Warranty Period",     project.warranty_period)
-        _row("Job Sub-Type",        project.job_subtype)
-        _row("Owner",               project.owner)
-        _row("Contracted With",     project.contracted_with)
-        _row("General Contractor",  project.general_contractor)
-        _row("Group Ops Manager",   project.group_ops_manager)
-        _row("Group Ops Supervisor",project.group_ops_supervisor)
-        _row("Div25 URL",           project.div25_url)
-        _row("Job Docs Path",       project.job_docs)
+        _row("Job Number",           project.job_number)
+        _row("Job Name",             project.job_name)
+        _row("Project Manager",      project.project_manager)
+        _row("Sales Engineer",       project.sales_engineer)
+        _row("Target Completion",    project.target_completion or "")
+        _row("Booked Date",          project.booked_date)
+        _row("Contract Value",       project.contract_value)
+        _row("Liquid Damages",       project.liquid_damages)
+        _row("Warranty Period",      project.warranty_period)
+        _row("Job Sub-Type",         project.job_subtype)
+        _row("Owner",                project.owner)
+        _row("Contracted With",      project.contracted_with)
+        _row("General Contractor",   project.general_contractor)
+        _row("Group Ops Manager",    project.group_ops_manager)
+        _row("Group Ops Supervisor", project.group_ops_supervisor)
+        _row("Div25 URL",            project.div25_url)
+        _row("Job Docs Path",        project.job_docs)
+
         if project.notes:
-            notes_lbl = QLabel(project.notes)
-            notes_lbl.setWordWrap(True)
-            notes_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            notes_lbl.setMinimumWidth(300)
-            form.addRow("<b>Notes</b>", notes_lbl)
+            notes_edit = QPlainTextEdit(project.notes)
+            notes_edit.setReadOnly(True)
+            notes_edit.setFixedHeight(120)
+            notes_edit.setMinimumWidth(300)
+            form.addRow("<b>Notes</b>", notes_edit)
 
         # ── ODIN Financial Summary ──────────────────────────────────────── #
         if self._financials_provider and project.job_number:
@@ -2052,26 +2527,29 @@ class MainWindow(QMainWindow):
                 diff_lbl = QLabel(f"<span style='color:{diff_color}; font-weight:bold'>{arrow} {abs(diff)*100:.1f}%</span>")
                 diff_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-                _fin_row("Contract Value",      f"${snap.contract_value:,.2f}")
-                _fin_row("Billed to Date",      f"${snap.billed_to_date:,.2f}")
-                _fin_row("Actual Cost",         f"${snap.actual_cost:,.2f}")
-                _fin_row("Booked Margin",       f"{snap.booked_margin*100:.1f}%")
-                _fin_row("Actual Margin",       f"{snap.actual_margin*100:.1f}%")
+                _fin_row("Contract Value",  f"${snap.contract_value:,.2f}")
+                _fin_row("Billed to Date",  f"${snap.billed_to_date:,.2f}")
+                _fin_row("Actual Cost",     f"${snap.actual_cost:,.2f}")
+                _fin_row("Booked Margin",   f"{snap.booked_margin*100:.1f}%")
+                _fin_row("Actual Margin",   f"{snap.actual_margin*100:.1f}%")
                 form.addRow("<b>Differential</b>", diff_lbl)
-                _fin_row("Status (ODIN)",       snap.status)
+                _fin_row("Status (ODIN)",   snap.status)
                 if snap.last_refreshed:
-                    _fin_row("Data as of",      snap.last_refreshed)
+                    _fin_row("Data as of",  snap.last_refreshed)
+
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dlg.accept)
 
         layout = QVBoxLayout(dlg)
-        layout.addWidget(inner)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(scroll, 1)
         layout.addWidget(close_btn)
 
-        # Size to content — let Qt calculate the natural size then add margins
-        inner.adjustSize()
-        dlg.adjustSize()
         dlg.exec()
 
     def _start_file_watcher(self) -> None:
@@ -2172,7 +2650,7 @@ class MainWindow(QMainWindow):
             _LOCAL_SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(_LOCAL_SNAPSHOT_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
     def _check_recent_changes(self) -> None:
@@ -2184,7 +2662,7 @@ class MainWindow(QMainWindow):
         try:
             with open(_LOCAL_SNAPSHOT_PATH, encoding="utf-8") as f:
                 snapshot = json.load(f)
-        except Exception:
+        except (OSError, ValueError):
             self._save_session_snapshot()
             return
 
@@ -2366,19 +2844,163 @@ class MainWindow(QMainWindow):
         """Return path to users.json, co-located with the data file."""
         return self.backend.db_path.parent / "users.json"
 
+    def _update_status_bar_user(self) -> None:
+        from user_auth import ROLE_LABELS
+        if self._current_user:
+            role = self._current_user_role()
+            role_label = ROLE_LABELS.get(role, "")
+            suffix = f"  [{role_label}]" if role_label else ""
+            self._user_status_lbl.setText(f"  Logged in as: {self._current_user}{suffix}")
+        else:
+            self._user_status_lbl.setText("")
+
+    def _current_user_role(self) -> str:
+        """Return the role of the logged-in user.
+
+        Returns 'admin' when no users exist yet (first-time setup),
+        'none' when users exist but nobody is logged in, or the user's
+        actual role string otherwise.
+        """
+        if not self._current_user:
+            um = UserManager(self._users_path())
+            return "admin" if not um.has_any_users() else "none"
+        um = UserManager(self._users_path())
+        user = um.get_user(self._current_user)
+        return user.role if user is not None else "user"
+
+    def _current_user_is_admin(self) -> bool:
+        return self._current_user_role() == "admin"
+
+    def _current_user_view_only(self) -> bool:
+        return self._current_user_role() == "view_only"
+
+    def _do_login(self) -> None:
+        um = UserManager(self._users_path())
+        if not um.has_any_users():
+            return
+        dlg = LoginDialog(um, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        user = dlg.logged_in_user()
+        if user is None:
+            return
+        if user.must_change_password:
+            ChangePasswordDialog(um, user.username, parent=self).exec()
+        self._current_user = user.username
+        self.backend.current_user = user.username
+        self._reset_controls()
+        if self._current_user_view_only():
+            self._apply_view_only_restrictions()
+        self._update_status_bar_user()
+        self._update_auth_menu()
+        self._stack.setCurrentIndex(1)
+        self.refresh_project_list()
+
+    def _do_logout(self) -> None:
+        reply = QMessageBox.question(
+            self, "Log Out",
+            f"Log out of '{self._current_user}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._current_user = ""
+        self.backend.current_user = ""
+        _SESSION_PATH.unlink(missing_ok=True)
+        self.current_project_id = None
+        self._update_status_bar_user()
+        self._update_auth_menu()
+        self._stack.setCurrentIndex(0)
+
+    def _reset_controls(self) -> None:
+        """Re-enable all modification controls before applying role restrictions."""
+        self.new_project_btn.setEnabled(True)
+        self.edit_project_btn.setEnabled(True)
+        self.delete_project_btn.setEnabled(True)
+        self.pin_project_btn.setEnabled(True)
+        self.pin_project_btn.setToolTip("Pin this project to the top of the list")
+        self.task_table.setDragEnabled(True)
+        self.bulk_complete_btn.setEnabled(True)
+        self.bulk_complete_btn.setToolTip("Mark all visible tasks complete")
+        self.bulk_uncomplete_btn.setEnabled(True)
+        self.bulk_uncomplete_btn.setToolTip("Mark all visible tasks incomplete")
+        self.import_btn.setEnabled(True)
+        self.import_email_btn.setEnabled(True)
+        self.import_email_btn.setToolTip("Import project from Odin assignment email (.eml)")
+        self.add_task_btn.setEnabled(True)
+        self.notes_btn.setEnabled(True)
+        self.notes_btn.setToolTip("Open job progress notes")
+        self.co_btn.setEnabled(True)
+        self.co_btn.setToolTip("Open change order log")
+        self.activity_log_btn.setEnabled(True)
+        self.activity_log_btn.setToolTip("View activity log for this project")
+        self.template_apply_combo.setEnabled(True)
+        self._new_project_action.setEnabled(True)
+        self._import_action.setEnabled(True)
+
+    def _update_auth_menu(self) -> None:
+        """Toggle menu item visibility based on logged-in state and role."""
+        logged_in = bool(self._current_user)
+        view_only = self._current_user_view_only()
+        self._login_action.setVisible(not logged_in)
+        self._logout_action.setVisible(logged_in)
+        self._change_pw_action.setVisible(logged_in)
+        self._manage_users_action_ref.setVisible(logged_in and self._current_user_is_admin())
+        for action in self._logged_in_only_actions:
+            action.setVisible(logged_in)
+        # Hide write actions from view-only users
+        self._new_project_action.setVisible(logged_in and not view_only)
+        self._import_action.setVisible(logged_in and not view_only)
+
     def _open_manage_users(self) -> None:
+        if not self._current_user_is_admin():
+            QMessageBox.warning(self, "Access Denied", "Only administrators can manage users.")
+            return
         um = UserManager(self._users_path())
         dlg = ManageUsersDialog(um, self._current_user, parent=self)
         dlg.exec()
 
+    def _open_change_my_password(self) -> None:
+        if not self._current_user:
+            return
+        um = UserManager(self._users_path())
+        dlg = SelfChangePasswordDialog(um, self._current_user, parent=self)
+        dlg.exec()
+
+    def _apply_view_only_restrictions(self) -> None:
+        """Disable all data-modification controls for view-only users."""
+        tip = "Your account is view-only"
+        for btn in (
+            self.new_project_btn, self.edit_project_btn, self.delete_project_btn,
+            self.pin_project_btn, self.import_btn, self.import_email_btn, self.add_task_btn,
+            self.notes_btn, self.co_btn, self.template_apply_combo,
+        ):
+            btn.setEnabled(False)
+            btn.setToolTip(tip)
+        self._new_project_action.setEnabled(False)
+        self._import_action.setEnabled(False)
+        self.task_table.setDragEnabled(False)
+        for btn in (self.bulk_complete_btn, self.bulk_uncomplete_btn):
+            btn.setEnabled(False)
+            btn.setToolTip(tip)
+
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
 
-        new_action = QAction("New Project", self)
-        new_action.triggered.connect(self.create_project)
+        # ── Auth actions (mutually exclusive) ─────────────────────────────
+        self._login_action = QAction("Log In...", self)
+        self._login_action.triggered.connect(self._do_login)
 
-        import_action = QAction("Import Workbook", self)
-        import_action.triggered.connect(self.import_workbook)
+        self._logout_action = QAction("Log Out", self)
+        self._logout_action.triggered.connect(self._do_logout)
+
+        # ── Logged-in actions ─────────────────────────────────────────────
+        self._new_project_action = QAction("New Project", self)
+        self._new_project_action.triggered.connect(self.create_project)
+
+        self._import_action = QAction("Import Workbook", self)
+        self._import_action.triggered.connect(self.import_workbook)
 
         self.export_excel_action = QAction("Export to Excel (.xlsx)", self)
         self.export_excel_action.triggered.connect(self.export_excel)
@@ -2388,29 +3010,52 @@ class MainWindow(QMainWindow):
         self.export_menu_action.triggered.connect(self.export_snapshot)
         self.export_menu_action.setEnabled(False)
 
+        self.bulk_export_excel_action = QAction("Bulk Export to Excel...", self)
+        self.bulk_export_excel_action.triggered.connect(self._bulk_export_excel)
+
+        self._data_location_action = QAction("Data Location...", self)
+        self._data_location_action.triggered.connect(self._open_data_location_settings)
+
+        self._financials_action = QAction("Financial Data File...", self)
+        self._financials_action.triggered.connect(self._open_financials_file_settings)
+
+        self._manage_users_action_ref = QAction("Manage Users...", self)
+        self._manage_users_action_ref.triggered.connect(self._open_manage_users)
+
+        self._change_pw_action = QAction("Change My Password...", self)
+        self._change_pw_action.triggered.connect(self._open_change_my_password)
+
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
 
-        data_location_action = QAction("Data Location...", self)
-        data_location_action.triggered.connect(self._open_data_location_settings)
+        # All actions that should only appear when logged in
+        self._logged_in_only_actions = [
+            self._new_project_action,
+            self._import_action,
+            self.export_excel_action,
+            self.export_menu_action,
+            self.bulk_export_excel_action,
+            self._data_location_action,
+            self._financials_action,
+        ]
 
-        financials_file_action = QAction("Financial Data File...", self)
-        financials_file_action.triggered.connect(self._open_financials_file_settings)
-
-        manage_users_action = QAction("Manage Users...", self)
-        manage_users_action.triggered.connect(self._open_manage_users)
-
-        file_menu.addAction(new_action)
-        file_menu.addAction(import_action)
+        file_menu.addAction(self._login_action)
+        file_menu.addAction(self._new_project_action)
+        file_menu.addAction(self._import_action)
         file_menu.addSeparator()
         file_menu.addAction(self.export_excel_action)
         file_menu.addAction(self.export_menu_action)
+        file_menu.addAction(self.bulk_export_excel_action)
         file_menu.addSeparator()
-        file_menu.addAction(data_location_action)
-        file_menu.addAction(financials_file_action)
-        file_menu.addAction(manage_users_action)
+        file_menu.addAction(self._data_location_action)
+        file_menu.addAction(self._financials_action)
+        file_menu.addAction(self._manage_users_action_ref)
+        file_menu.addAction(self._change_pw_action)
+        file_menu.addAction(self._logout_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
+
+        self._update_auth_menu()
 
         # ── View menu ──────────────────────────────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
@@ -2635,15 +3280,16 @@ class MainWindow(QMainWindow):
                         )
                     else:
                         fin_html = '<span style="color:#888888">ODIN: No data</span>'
-                except Exception:  # noqa: BLE001
-                    import logging as _logging
-                    _logging.getLogger(__name__).exception(
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    logger.exception(
                         "Failed to build financial line for job %s", project.job_number
                     )
 
             job_name = project.job_name or ""
             if len(job_name) > 36:
                 job_name = job_name[:34] + "…"
+            if project.pinned:
+                job_name = "📌 " + job_name
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)
@@ -2738,6 +3384,8 @@ class MainWindow(QMainWindow):
         self.div25_btn.setEnabled(bool(self._div25_url))
         self.div25_btn.setToolTip(self._div25_url or "No Div25 URL")
         self.project_notes.setPlainText(project.notes or "")
+        if not self._current_user_view_only():
+            self._update_pin_button(project.pinned)
 
         self.current_tasks = self.backend.list_tasks(self.current_project_id)
         self._refresh_stats_only()
@@ -2760,6 +3408,7 @@ class MainWindow(QMainWindow):
         self._div25_url = ""
         self.div25_btn.setEnabled(False)
         self.div25_btn.setToolTip("No Div25 URL")
+        self._update_pin_button(False)
         self.project_notes.clear()
         self.total_tasks_card.set_value("0")
         self.completed_card.set_value("0")
@@ -2772,7 +3421,7 @@ class MainWindow(QMainWindow):
         self.export_excel_action.setEnabled(False)
 
     def _on_header_clicked(self, col: int) -> None:
-        if col == 5:
+        if col == 6:
             return
         if self._sort_column == col:
             self._sort_ascending = not self._sort_ascending
@@ -2830,8 +3479,9 @@ class MainWindow(QMainWindow):
             0: lambda t: (0 if t.is_complete else 1),
             1: lambda t: t.task_name.casefold(),
             2: lambda t: t.phase.casefold(),
-            3: lambda t: t.completed_date or "",
-            4: lambda t: (t.notes or "").casefold(),
+            3: lambda t: t.due_date or "",
+            4: lambda t: t.completed_date or "",
+            5: lambda t: (t.notes or "").casefold(),
         }
         if self._sort_column in col_keys:
             filtered_tasks = sorted(
@@ -2840,26 +3490,38 @@ class MainWindow(QMainWindow):
                 reverse=not self._sort_ascending,
             )
 
+        today_str = QDate.currentDate().toString("yyyy-MM-dd")
+
         self._populating = True
         try:
             self.task_table.setRowCount(len(filtered_tasks))
             for row_index, task in enumerate(filtered_tasks):
                 checkbox = QCheckBox()
                 checkbox.setChecked(task.is_complete)
-                checkbox.toggled.connect(
-                    lambda checked, task_id=task.id: self.toggle_task(int(task_id), bool(checked))
-                )
+                if self._current_user_view_only():
+                    checkbox.setEnabled(False)
+                else:
+                    checkbox.toggled.connect(
+                        lambda checked, task_id=task.id: self.toggle_task(int(task_id), bool(checked))
+                    )
                 self.task_table.setCellWidget(row_index, 0, self._centered_widget(checkbox))
                 self.task_table.setItem(row_index, 1, QTableWidgetItem(task.task_name))
 
                 phase_item = QTableWidgetItem(task.phase)
                 phase_item.setForeground(QColor(PHASE_COLORS.get(task.phase, "#64748b")))
                 self.task_table.setItem(row_index, 2, phase_item)
-                self.task_table.setItem(row_index, 3, QTableWidgetItem(task.completed_date or ""))
-                self.task_table.setItem(row_index, 4, QTableWidgetItem(task.notes or ""))
-                self.task_table.setCellWidget(row_index, 5, self._task_actions_widget(task))
 
-                for column_index in range(1, 5):
+                # Due date — highlight overdue (past due, not completed) in red
+                due_item = QTableWidgetItem(task.due_date or "")
+                if task.due_date and not task.is_complete and task.due_date < today_str:
+                    due_item.setForeground(QColor("#f44336"))
+                self.task_table.setItem(row_index, 3, due_item)
+
+                self.task_table.setItem(row_index, 4, QTableWidgetItem(task.completed_date or ""))
+                self.task_table.setItem(row_index, 5, QTableWidgetItem(task.notes or ""))
+                self.task_table.setCellWidget(row_index, 6, self._task_actions_widget(task))
+
+                for column_index in range(1, 6):
                     item = self.task_table.item(row_index, column_index)
                     if item is not None:
                         item.setData(Qt.ItemDataRole.UserRole, task.id)
@@ -2869,6 +3531,9 @@ class MainWindow(QMainWindow):
 
     def _task_actions_widget(self, task: TaskRecord) -> QWidget:
         container = QWidget()
+        if self._current_user_view_only():
+            return container
+
         button_layout = QHBoxLayout(container)
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
@@ -2911,12 +3576,16 @@ class MainWindow(QMainWindow):
         return True
 
     def create_project(self) -> None:
+        if self._current_user_view_only():
+            return
         dialog = ProjectDialog(self)
         if dialog.exec() != int(QDialog.DialogCode.Accepted):
             return
         self._save_new_project(dialog.get_data(), task_template=dialog.get_template())
 
     def edit_current_project(self) -> None:
+        if self._current_user_view_only():
+            return
         if self.current_project_id is None:
             QMessageBox.information(self, "No project selected", "Select a project first.")
             return
@@ -2957,6 +3626,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Project updated", 4000)
 
     def delete_current_project(self) -> None:
+        if self._current_user_view_only():
+            return
         if self.current_project_id is None:
             QMessageBox.information(self, "No project selected", "Select a project first.")
             return
@@ -2977,6 +3648,30 @@ class MainWindow(QMainWindow):
         self.refresh_project_list()
         self.status_bar.showMessage("Project deleted", 4000)
 
+    def _toggle_pin(self) -> None:
+        if self._current_user_view_only():
+            return
+        if self.current_project_id is None:
+            QMessageBox.information(self, "No project selected", "Select a project first.")
+            return
+        project = self.backend.get_project(self.current_project_id)
+        if not project:
+            return
+        new_pinned = not project.pinned
+        self.backend.update_project(self.current_project_id, pinned=new_pinned)
+        self._update_pin_button(new_pinned)
+        self.refresh_project_list()
+        msg = "Project pinned to top" if new_pinned else "Project unpinned"
+        self.status_bar.showMessage(msg, 3000)
+
+    def _update_pin_button(self, pinned: bool) -> None:
+        if pinned:
+            self.pin_project_btn.setText("📌 Unpin")
+            self.pin_project_btn.setToolTip("Unpin this project")
+        else:
+            self.pin_project_btn.setText("📌 Pin")
+            self.pin_project_btn.setToolTip("Pin this project to the top of the list")
+
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
@@ -2986,6 +3681,8 @@ class MainWindow(QMainWindow):
         event.ignore()
 
     def dropEvent(self, event) -> None:
+        if self._current_user_view_only():
+            return
         for url in event.mimeData().urls():
             path = url.toLocalFile()
             if path.lower().endswith(".eml"):
@@ -2993,6 +3690,8 @@ class MainWindow(QMainWindow):
                 return
 
     def import_email(self) -> None:
+        if self._current_user_view_only():
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Odin Assignment Email",
@@ -3056,6 +3755,8 @@ class MainWindow(QMainWindow):
         )
 
     def import_workbook(self) -> None:
+        if self._current_user_view_only():
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Import workbook", "",
             "Excel Files (*.xlsx *.xlsm *.xltx *.xltm)",
@@ -3115,7 +3816,33 @@ class MainWindow(QMainWindow):
             return
         self.status_bar.showMessage(f"Exported snapshot to {output_path}", 5000)
 
+    def _bulk_export_excel(self) -> None:
+        projects = self.backend.list_projects(include_test=self._show_test_jobs)
+        if not projects:
+            QMessageBox.information(self, "No projects", "There are no projects to export.")
+            return
+        dlg = BulkExportDialog(projects, parent=self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        ids = dlg.selected_ids()
+        if not ids:
+            QMessageBox.information(self, "Nothing selected", "Select at least one project to export.")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Bulk Export to Excel", "bulk_export.xlsx", "Excel Files (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            output_path = self.backend.export_projects_to_excel(ids, file_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.status_bar.showMessage(f"Exported {len(ids)} project(s) to {output_path}", 6000)
+
     def add_task(self) -> None:
+        if self._current_user_view_only():
+            return
         if self.current_project_id is None:
             QMessageBox.information(self, "No project selected", "Select a project first.")
             return
@@ -3128,6 +3855,7 @@ class MainWindow(QMainWindow):
                 project_id=self.current_project_id,
                 task_name=data["task_name"],
                 phase=data["phase"],
+                due_date=data["due_date"],
                 completed_date=data["completed_date"],
                 notes=data["notes"],
             )
@@ -3138,6 +3866,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Task added", 4000)
 
     def edit_task(self, task_id: int) -> None:
+        if self._current_user_view_only():
+            return
         task = next((item for item in self.current_tasks if item.id == task_id), None)
         if not task:
             return
@@ -3154,6 +3884,8 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Task updated", 4000)
 
     def delete_task(self, task_id: int) -> None:
+        if self._current_user_view_only():
+            return
         task = next((item for item in self.current_tasks if item.id == task_id), None)
         if not task:
             return
@@ -3169,7 +3901,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Task deleted", 4000)
 
     def toggle_task(self, task_id: int, checked: bool) -> None:
-        if self._populating:
+        if self._populating or self._current_user_view_only():
             return
         try:
             self.backend.set_task_completed(task_id, checked)
@@ -3177,6 +3909,81 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Unable to update task", str(exc))
             return
         self._refresh_stats_only()
+
+    def _on_tasks_reordered(self) -> None:
+        """Called after a drag-drop reorder in the task table. Persists new sort_order values."""
+        if self._current_user_view_only():
+            return
+        for row_index in range(self.task_table.rowCount()):
+            item = self.task_table.item(row_index, 1)
+            if item is None:
+                continue
+            task_id = item.data(Qt.ItemDataRole.UserRole)
+            if task_id is not None:
+                self.backend.update_task(int(task_id), sort_order=row_index)
+        # Reload to sync current_tasks list with new order
+        if self.current_project_id is not None:
+            self.current_tasks = self.backend.list_tasks(self.current_project_id)
+
+    def _bulk_complete_tasks(self) -> None:
+        """Mark all currently visible tasks as complete."""
+        if self._current_user_view_only():
+            return
+        task_ids = self._visible_task_ids()
+        if not task_ids:
+            return
+        reply = QMessageBox.question(
+            self, "Mark All Complete",
+            f"Mark {len(task_ids)} visible task(s) as complete?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for task_id in task_ids:
+            self.backend.set_task_completed(task_id, True)
+        self.load_current_project()
+        self.status_bar.showMessage(f"Marked {len(task_ids)} task(s) complete", 4000)
+
+    def _bulk_uncomplete_tasks(self) -> None:
+        """Mark all currently visible tasks as incomplete."""
+        if self._current_user_view_only():
+            return
+        task_ids = self._visible_task_ids()
+        if not task_ids:
+            return
+        reply = QMessageBox.question(
+            self, "Mark All Incomplete",
+            f"Mark {len(task_ids)} visible task(s) as incomplete?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for task_id in task_ids:
+            self.backend.set_task_completed(task_id, False)
+        self.load_current_project()
+        self.status_bar.showMessage(f"Marked {len(task_ids)} task(s) incomplete", 4000)
+
+    def _visible_task_ids(self) -> list[int]:
+        """Return task IDs for all rows currently displayed in the task table."""
+        ids = []
+        for row_index in range(self.task_table.rowCount()):
+            item = self.task_table.item(row_index, 1)
+            if item is not None:
+                task_id = item.data(Qt.ItemDataRole.UserRole)
+                if task_id is not None:
+                    ids.append(int(task_id))
+        return ids
+
+    def _toggle_compact_view(self) -> None:
+        self._compact_mode = self.compact_btn.isChecked()
+        row_height = 24 if self._compact_mode else 36
+        self.task_table.verticalHeader().setDefaultSectionSize(row_height)
+        # Resize all existing rows
+        for row_index in range(self.task_table.rowCount()):
+            self.task_table.setRowHeight(row_index, row_height)
+        # Hide Notes column (col 5) in compact mode
+        self.task_table.setColumnHidden(5, self._compact_mode)
+        self.compact_btn.setText("⊞ Normal" if self._compact_mode else "⊟ Compact")
 
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
@@ -3620,7 +4427,7 @@ def main() -> int:
                 if remembered and user_manager.get_user(remembered):
                     current_user = remembered
                     auto_logged_in = True
-            except Exception:
+            except (OSError, ValueError, KeyError):
                 pass
 
         if not auto_logged_in:
@@ -3637,6 +4444,9 @@ def main() -> int:
                 chpw_dlg.exec()  # They must complete this; closing is treated as done
     # If no users exist yet, the app opens without requiring login so the admin
     # can set up accounts via File > Manage Users.
+
+    # Auto-backup on open (keep last 10 backups)
+    _backup_data_file(_app_data_path())
 
     window = MainWindow(current_user=current_user)
     window.showMaximized()

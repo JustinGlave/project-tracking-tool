@@ -38,6 +38,7 @@ class ProjectRecord:
     job_docs: str = ""
     div25_url: str = ""
     is_test: bool = False
+    pinned: bool = False
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     created_by: str = ""
@@ -51,10 +52,23 @@ class TaskRecord:
     task_name: str = ""
     phase: str = "General"
     sort_order: int = 0
+    due_date: Optional[str] = None
     completed_date: Optional[str] = None
     is_complete: bool = False
     notes: str = ""
     updated_by: str = ""
+
+
+@dataclass(slots=True)
+class ActivityRecord:
+    id: Optional[int] = None
+    project_id: Optional[int] = None
+    timestamp: str = ""
+    user: str = ""
+    action: str = ""       # "created" | "updated" | "deleted" | "completed" | "uncompleted"
+    entity_type: str = ""  # "task" | "project"
+    entity_name: str = ""
+    details: str = ""
 
 
 @dataclass(slots=True)
@@ -196,20 +210,28 @@ class ProjectTrackerBackend:
                 data["next_note_id"] = self._next_id(data.get("notes", [])); changed = True
             if "next_co_id" not in data:
                 data["next_co_id"] = self._next_id(data.get("change_orders", [])); changed = True
+            if "activity_log" not in data:
+                data["activity_log"] = []; changed = True
+            if "next_activity_id" not in data:
+                data["next_activity_id"] = 1; changed = True
             if changed:
                 self._save_data(data)
             return
 
         self._save_data({
             "projects": [], "tasks": [], "notes": [], "change_orders": [],
-            "next_project_id": 1, "next_task_id": 1, "next_note_id": 1, "next_co_id": 1,
+            "activity_log": [],
+            "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1,
         })
 
     def _load_data(self) -> dict[str, Any]:
         if not self.db_path.exists():
             return {
                 "projects": [], "tasks": [], "notes": [], "change_orders": [],
-                "next_project_id": 1, "next_task_id": 1, "next_note_id": 1, "next_co_id": 1,
+                "activity_log": [],
+                "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
+                "next_co_id": 1, "next_activity_id": 1,
             }
         return json.loads(self.db_path.read_text(encoding="utf-8"))
 
@@ -217,6 +239,7 @@ class ProjectTrackerBackend:
         # Write to a temp file alongside the target, then rename — this ensures
         # atomic saves on all major platforms and prevents a half-written
         # JSON file if the process is interrupted mid-save.
+        import time
         tmp_fd, tmp_path_str = tempfile.mkstemp(
             dir=self.db_path.parent, suffix=".tmp"
         )
@@ -224,7 +247,16 @@ class ProjectTrackerBackend:
         try:
             with open(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
-            tmp_path.replace(self.db_path)
+            # Retry rename up to 5 times — cloud-sync clients (OneDrive, etc.)
+            # can briefly lock the target file, causing WinError 5.
+            for attempt in range(5):
+                try:
+                    tmp_path.replace(self.db_path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.2 * (attempt + 1))
         except Exception:
             tmp_path.unlink(missing_ok=True)
             raise
@@ -277,6 +309,7 @@ class ProjectTrackerBackend:
             "job_docs": project.job_docs.strip(),
             "div25_url": project.div25_url.strip(),
             "is_test": project.is_test,
+            "pinned": project.pinned,
             "created_at": now,
             "updated_at": now,
             "created_by": self.current_user,
@@ -284,6 +317,7 @@ class ProjectTrackerBackend:
         }
         data["projects"].append(project_record)
         data["next_project_id"] = new_project_id + 1
+        self._log_activity(data, new_project_id, "created", "project", project.job_name)
 
         if include_default_tasks:
             task_list = PHOENIX_TASKS if task_template == "phoenix" else DEFAULT_TASKS
@@ -312,6 +346,7 @@ class ProjectTrackerBackend:
             "contract_value",
             "job_docs",
             "div25_url",
+            "pinned",
         }
         unknown_keys = set(changes) - allowed_fields
         if unknown_keys:
@@ -340,17 +375,35 @@ class ProjectTrackerBackend:
                         f"Project with job number '{new_job_number}' already exists."
                     )
 
+        old_values = {f: target_project.get(f) for f in updates}
         for field_name, field_value in updates.items():
             target_project[field_name] = field_value.strip() if isinstance(field_value, str) else field_value
 
         target_project["updated_at"] = self._now_iso()
         target_project["updated_by"] = self.current_user
+
+        changed_fields = [
+            f for f in updates
+            if str(old_values[f] or "") != str(
+                (updates[f].strip() if isinstance(updates[f], str) else updates[f]) or ""
+            )
+        ]
+        if changed_fields:
+            self._log_activity(
+                data, project_id, "updated", "project",
+                target_project["job_name"], ", ".join(changed_fields),
+            )
+
         self._save_data(data)
 
     def delete_project(self, project_id: int) -> None:
         data = self._load_data()
+        target = self._find_project_dict(data, project_id)
+        project_name = target["job_name"] if target else f"#{project_id}"
+        self._log_activity(data, project_id, "deleted", "project", project_name)
         data["projects"] = [item for item in data["projects"] if int(item["id"]) != project_id]
         data["tasks"] = [item for item in data["tasks"] if int(item["project_id"]) != project_id]
+        data["activity_log"] = [a for a in data.get("activity_log", []) if int(a["project_id"]) != project_id]
         self._save_data(data)
 
     def get_project(self, project_id: int) -> Optional[ProjectRecord]:
@@ -392,6 +445,8 @@ class ProjectTrackerBackend:
             )
 
         project_dicts = sorted(project_dicts, key=key_fn, reverse=not sort_asc)
+        # Pinned projects always float to the top, preserving sub-sort within each group
+        project_dicts = sorted(project_dicts, key=lambda item: 0 if item.get("pinned") else 1)
         return [self._project_from_dict(item) for item in project_dicts]
 
     # ---------- task methods ----------
@@ -402,6 +457,7 @@ class ProjectTrackerBackend:
         task_name: str,
         phase: str = "General",
         sort_order: Optional[int] = None,
+        due_date: Optional[str] = None,
         completed_date: Optional[str] = None,
         notes: str = "",
     ) -> int:
@@ -426,6 +482,7 @@ class ProjectTrackerBackend:
             sort_order if sort_order is not None
             else self._next_sort_order_from_data(data, project_id)
         )
+        normalized_due_date = self._normalize_date(due_date)
         normalized_completed_date = self._normalize_date(completed_date)
         new_task_id = int(data["next_task_id"])
 
@@ -435,6 +492,7 @@ class ProjectTrackerBackend:
             "task_name": cleaned_task_name,
             "phase": cleaned_phase,
             "sort_order": int(new_sort_order),
+            "due_date": normalized_due_date,
             "completed_date": normalized_completed_date,
             "is_complete": bool(normalized_completed_date),
             "notes": notes.strip(),
@@ -444,6 +502,7 @@ class ProjectTrackerBackend:
         data["next_task_id"] = new_task_id + 1
         target_project["updated_at"] = self._now_iso()
         target_project["updated_by"] = self.current_user
+        self._log_activity(data, project_id, "created", "task", cleaned_task_name, f"phase: {cleaned_phase}")
         self._save_data(data)
         return new_task_id
 
@@ -452,6 +511,7 @@ class ProjectTrackerBackend:
             "task_name",
             "phase",
             "sort_order",
+            "due_date",
             "completed_date",
             "is_complete",
             "notes",
@@ -464,6 +524,8 @@ class ProjectTrackerBackend:
         if not updates:
             return
 
+        if "due_date" in updates:
+            updates["due_date"] = self._normalize_date(updates["due_date"])
         if "completed_date" in updates:
             updates["completed_date"] = self._normalize_date(updates["completed_date"])
         if "completed_date" in updates and "is_complete" not in updates:
@@ -489,6 +551,9 @@ class ProjectTrackerBackend:
                     f"Task '{updated_task_name}' already exists for this project."
                 )
 
+        # Capture state before applying updates (needed for completion logging)
+        was_complete = bool(target_task.get("is_complete"))
+
         for field_name, field_value in updates.items():
             target_task[field_name] = field_value
 
@@ -498,6 +563,21 @@ class ProjectTrackerBackend:
             owning_project["updated_at"] = self._now_iso()
             owning_project["updated_by"] = self.current_user
 
+        if "is_complete" in updates:
+            new_complete = bool(updates["is_complete"])
+            if new_complete != was_complete:
+                action = "completed" if new_complete else "uncompleted"
+                self._log_activity(
+                    data, int(target_task["project_id"]), action, "task", target_task["task_name"]
+                )
+        else:
+            meaningful = [k for k in updates if k != "sort_order"]
+            if meaningful:
+                self._log_activity(
+                    data, int(target_task["project_id"]), "updated", "task",
+                    target_task["task_name"], ", ".join(meaningful),
+                )
+
         self._save_data(data)
 
     def delete_task(self, task_id: int) -> None:
@@ -506,6 +586,7 @@ class ProjectTrackerBackend:
         if target_task is None:
             return
 
+        task_name = target_task["task_name"]
         owning_project_id = int(target_task["project_id"])
         data["tasks"] = [item for item in data["tasks"] if int(item["id"]) != task_id]
 
@@ -514,6 +595,7 @@ class ProjectTrackerBackend:
             owning_project["updated_at"] = self._now_iso()
             owning_project["updated_by"] = self.current_user
 
+        self._log_activity(data, owning_project_id, "deleted", "task", task_name)
         self._save_data(data)
 
     def replace_project_tasks(self, project_id: int, task_template: str) -> None:
@@ -995,6 +1077,7 @@ class ProjectTrackerBackend:
         data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) not in test_ids]
         data["notes"] = [n for n in data["notes"] if int(n["project_id"]) not in test_ids]
         data["change_orders"] = [c for c in data["change_orders"] if int(c["project_id"]) not in test_ids]
+        data["activity_log"] = [a for a in data.get("activity_log", []) if int(a["project_id"]) not in test_ids]
         self._save_data(data)
 
     def export_project_snapshot(self, project_id: int, export_path: str | Path) -> Path:
@@ -1010,6 +1093,33 @@ class ProjectTrackerBackend:
     def export_project_to_excel(self, project_id: int, export_path: str | Path) -> Path:
         """Export project info and all tasks to a formatted Excel workbook."""
         from openpyxl import Workbook
+        wb = Workbook()
+        self._write_project_sheets(wb, project_id)
+        output_file = Path(export_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(output_file)
+        return output_file
+
+    def export_projects_to_excel(self, project_ids: list[int], export_path: str | Path) -> Path:
+        """Export multiple projects to a single workbook, one set of sheets per project."""
+        from openpyxl import Workbook
+        wb = Workbook()
+        # Remove the default empty sheet
+        wb.remove(wb.active)  # type: ignore[arg-type]
+        for pid in project_ids:
+            project = self.get_project(pid)
+            if project is None:
+                continue
+            prefix = project.job_number or project.job_name
+            self._write_project_sheets(wb, pid, prefix=prefix)
+        output_file = Path(export_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        wb.save(output_file)
+        return output_file
+
+    def _write_project_sheets(self, wb: Any, project_id: int, prefix: str = "") -> None:
+        """Write project report sheets into wb. prefix="" uses standard sheet names;
+        a non-empty prefix creates uniquely-named sheets for multi-project workbooks."""
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
         project = self.get_project(project_id)
@@ -1019,9 +1129,18 @@ class ProjectTrackerBackend:
         summary = self.get_project_summary(project_id)
         totals  = summary["totals"]
 
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Project Report"
+        # Sheet name helpers
+        def _sheet_name(suffix: str) -> str:
+            if not prefix:
+                return suffix
+            safe = "".join(c for c in prefix if c not in r'\/*?:[]')
+            return f"{safe[:24]} {suffix}"[:31]
+
+        if not prefix:
+            ws = wb.active
+            ws.title = "Project Report"
+        else:
+            ws = wb.create_sheet(_sheet_name("Tasks"))
 
         dark_blue      = "1E3A5F"
         mid_blue       = "2D5A8E"
@@ -1146,12 +1265,10 @@ class ProjectTrackerBackend:
             row += 1
 
         ws.freeze_panes = f"A{row - len(tasks)}"
-        output_file = Path(export_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
 
         # ── Notes tab ─────────────────────────────────────────────────────────
         notes = self.list_notes(project_id)
-        wn = wb.create_sheet("Job Progress Notes")
+        wn = wb.create_sheet(_sheet_name("Job Progress Notes") if prefix else "Job Progress Notes")
 
         # Header block
         wn.merge_cells("B1:F1")
@@ -1209,7 +1326,7 @@ class ProjectTrackerBackend:
         # ── Change Orders tab ─────────────────────────────────────────────────
         cos = self.list_change_orders(project_id)
         co_sum = self.get_co_summary(project_id)
-        wco = wb.create_sheet("ATS CO Log")
+        wco = wb.create_sheet(_sheet_name("ATS CO Log") if prefix else "ATS CO Log")
 
         # Summary block
         summary_rows = [
@@ -1264,8 +1381,6 @@ class ProjectTrackerBackend:
 
         wco.freeze_panes = "A7"
 
-        wb.save(output_file)
-        return output_file
     # ---------- email import ----------
 
     def import_project_from_email(
@@ -1407,6 +1522,59 @@ class ProjectTrackerBackend:
             notes=record.notes,
         )
 
+    # ---------- activity log ----------
+
+    def _log_activity(
+        self,
+        data: dict[str, Any],
+        project_id: int,
+        action: str,
+        entity_type: str,
+        entity_name: str,
+        details: str = "",
+    ) -> None:
+        new_id = int(data.get("next_activity_id", 1))
+        data.setdefault("activity_log", []).append({
+            "id": new_id,
+            "project_id": project_id,
+            "timestamp": self._now_iso(),
+            "user": self.current_user,
+            "action": action,
+            "entity_type": entity_type,
+            "entity_name": entity_name,
+            "details": details,
+        })
+        data["next_activity_id"] = new_id + 1
+
+    def list_activity(self, project_id: int) -> list[ActivityRecord]:
+        data = self._load_data()
+        entries = [
+            e for e in data.get("activity_log", [])
+            if int(e["project_id"]) == project_id
+        ]
+        entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        return [
+            ActivityRecord(
+                id=e["id"],
+                project_id=e["project_id"],
+                timestamp=e["timestamp"],
+                user=e["user"],
+                action=e["action"],
+                entity_type=e["entity_type"],
+                entity_name=e["entity_name"],
+                details=e.get("details", ""),
+            )
+            for e in entries
+        ]
+
+    def delete_activity(self, activity_id: int) -> None:
+        data = self._load_data()
+        data["activity_log"] = [
+            a for a in data.get("activity_log", [])
+            if int(a["id"]) != activity_id
+        ]
+        self._save_data(data)
+
     # ---------- internal helpers ----------
 
     @staticmethod
@@ -1530,6 +1698,7 @@ class ProjectTrackerBackend:
             job_docs=project_dict.get("job_docs", ""),
             div25_url=project_dict.get("div25_url", ""),
             is_test=bool(project_dict.get("is_test", False)),
+            pinned=bool(project_dict.get("pinned", False)),
             created_at=project_dict["created_at"],
             updated_at=project_dict["updated_at"],
             created_by=project_dict.get("created_by", ""),
@@ -1544,6 +1713,7 @@ class ProjectTrackerBackend:
             task_name=task_dict["task_name"],
             phase=task_dict["phase"],
             sort_order=task_dict["sort_order"],
+            due_date=task_dict.get("due_date"),
             completed_date=task_dict["completed_date"],
             is_complete=bool(task_dict["is_complete"]),
             notes=task_dict["notes"],

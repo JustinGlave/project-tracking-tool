@@ -27,6 +27,10 @@ def _hash_password(password: str, salt: str) -> str:
     return dk.hex()
 
 
+ROLES = ("admin", "user", "view_only")
+ROLE_LABELS = {"admin": "Admin", "user": "User", "view_only": "View Only"}
+
+
 @dataclass
 class UserRecord:
     username: str
@@ -34,6 +38,7 @@ class UserRecord:
     salt: str
     must_change_password: bool = False
     created_at: str = ""
+    role: str = "user"  # "admin", "user", or "view_only"
 
 
 class UserManager:
@@ -42,6 +47,7 @@ class UserManager:
     def __init__(self, users_path: Path) -> None:
         self._path = users_path
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._auto_migrate_admin()
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -56,6 +62,7 @@ class UserManager:
         username: str,
         password: str,
         must_change_password: bool = True,
+        role: str = "user",
     ) -> None:
         username = username.strip()
         if not username:
@@ -64,6 +71,8 @@ class UserManager:
             raise ValueError(
                 f"Password must be at least {self.MIN_PASSWORD_LENGTH} characters."
             )
+        if role not in ROLES:
+            raise ValueError(f"Invalid role '{role}'. Must be one of: {', '.join(ROLES)}")
 
         data = self._load()
         if username.casefold() in {k.casefold() for k in data}:
@@ -77,6 +86,7 @@ class UserManager:
             salt=salt,
             must_change_password=must_change_password,
             created_at=datetime.now().replace(microsecond=0).isoformat(sep=" "),
+            role=role,
         )
         data[username] = asdict(record)
         self._save(data)
@@ -111,9 +121,14 @@ class UserManager:
     def delete_user(self, username: str) -> None:
         data = self._load()
         key = next((k for k in data if k.casefold() == username.casefold()), None)
-        if key is not None:
-            del data[key]
-            self._save(data)
+        if key is None:
+            return
+        if data[key].get("role") == "admin":
+            admin_count = sum(1 for v in data.values() if v.get("role") == "admin")
+            if admin_count <= 1:
+                raise ValueError("Cannot delete the only administrator account.")
+        del data[key]
+        self._save(data)
 
     def get_user(self, username: str) -> Optional[UserRecord]:
         data = self._load()
@@ -125,15 +140,74 @@ class UserManager:
     def has_any_users(self) -> bool:
         return bool(self._load())
 
+    def reset_password(self, username: str, temp_password: str) -> None:
+        """Set a temporary password and flag the account for a forced change on next login."""
+        self.change_password(username, temp_password)
+        data = self._load()
+        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        if key:
+            data[key]["must_change_password"] = True
+            self._save(data)
+
+    def set_role(self, username: str, role: str) -> None:
+        """Change the role for a user."""
+        if role not in ROLES:
+            raise ValueError(f"Invalid role '{role}'. Must be one of: {', '.join(ROLES)}")
+        data = self._load()
+        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        if key is None:
+            raise ValueError(f"User '{username}' not found.")
+        data[key]["role"] = role
+        self._save(data)
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
+
+    def _auto_migrate_admin(self) -> None:
+        """Migrate legacy is_admin field → role, and ensure at least one admin exists."""
+        if not self._path.exists():
+            return
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not raw:
+            return
+
+        changed = False
+        for val in raw.values():
+            if "role" not in val:
+                # Migrate from old is_admin bool
+                val["role"] = "admin" if val.pop("is_admin", False) else "user"
+                changed = True
+            else:
+                # Remove legacy field if it still lingers
+                if val.pop("is_admin", None) is not None:
+                    changed = True
+
+        # Ensure at least one admin
+        if not any(v.get("role") == "admin" for v in raw.values()):
+            first_key = next(iter(raw))
+            raw[first_key]["role"] = "admin"
+            changed = True
+            logger.info("Auto-promoted '%s' to admin (migration).", first_key)
+
+        if changed:
+            self._save(raw)
 
     def _load(self) -> dict:
         if not self._path.exists():
             return {}
         try:
-            return json.loads(self._path.read_text(encoding="utf-8"))
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            # Normalize legacy is_admin field so UserRecord(**match) never fails
+            for val in data.values():
+                if "role" not in val:
+                    val["role"] = "admin" if val.pop("is_admin", False) else "user"
+                else:
+                    val.pop("is_admin", None)
+            return data
         except Exception:
             logger.exception("Failed to load users file: %s", self._path)
             return {}

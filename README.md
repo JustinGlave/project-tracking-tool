@@ -2,22 +2,31 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.0.16**
+**Current Version: v1.0.25**
 
 ---
 
 ## What It Does
 
-- Create and manage projects with full job details (PM, SE, contract value, owner, etc.)
+- Create and manage projects with full job details (PM, SE, contract value, owner, contractor, Div25 URL, etc.)
 - Two task templates — **Standard** and **Phoenix** — applied at job creation or swapped any time
 - Track tasks by phase with color-coded progress matching the segmented progress bar
 - Add notes and change orders to each job
+- **Role-based access** — Admin, User, and View Only roles with per-role restrictions
+- **Pin projects** to the top of the list with a 📌 indicator
+- **Task due dates** — set due dates on tasks; overdue tasks highlight red
+- **Drag to reorder tasks** within a project
+- **Compact view** — toggle a condensed row layout to see more tasks at once
+- **Bulk complete / uncomplete** — mark all visible tasks done or undone in one click (with confirmation)
+- **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
+- **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
-- **Sort the project list** by Last Updated, Name, or Job Number — ascending or descending
+- Sort the project list by Last Updated, Name, or Job Number — ascending or descending
 - **Shared database** — point all users to a shared folder (SharePoint / OneDrive) so everyone works from the same data in real time
-- Export projects to Excel or JSON snapshot
+- Export a single project to Excel or JSON snapshot
 - Dark mode / light mode toggle with preference saved across sessions
+- Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder
 - Auto-updates — when a new version is released, the app notifies you and installs it with one click
 
 ---
@@ -53,7 +62,7 @@ No Python or other software required.
 If you selected the wrong template when creating a job, you can reset it:
 
 1. Select the job in the sidebar
-2. In the task bar, click the **Templates** dropdown (next to the Filter Tasks box)
+2. In the task bar, click the **Templates** dropdown
 3. Choose **Standard** or **Phoenix**
 4. Confirm the prompt — all current tasks will be replaced with the selected template
 
@@ -61,31 +70,43 @@ If you selected the wrong template when creating a job, you can reset it:
 
 ### Adding and Managing Tasks
 
-- Click **Add Task** (in the task bar between All Phases and Filter Tasks) to add a custom task
+- Click **Add Task** to add a custom task
 - Check the **Done** checkbox on any row to mark a task complete
 - Use **Edit** / **Del** buttons on each row to modify or remove individual tasks
+- Set a **Due Date** on any task — overdue incomplete tasks highlight red automatically
+- **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
-- Filter by phase using the **All Phases** dropdown, or search by keyword in the **Filter Tasks** box
+- Filter by phase using the **All phases** dropdown, or search by keyword in the **Filter tasks** box
+- Use **✓ All** / **✗ All** to bulk complete or uncomplete all currently visible tasks (confirmation required)
+- Toggle **Compact** to shrink row height and hide the Notes column for a denser view
+
+### Pinning a Project
+
+Click **📌 Pin** (bottom of the sidebar) to pin the selected project to the top of the list. Pinned projects always float above unpinned ones regardless of sort order. Click **📌 Unpin** to release it.
 
 ### Adding Notes
 
-1. With a job selected, click **Notes** in the task bar
+1. With a job selected, click **📝 Notes** in the task bar
 2. Click **+ Add Note** to create a new note with a date and content
 3. Notes can be marked **Open** or **Closed** and include a closeout comment
 4. Double-click any note row to edit it
 
 ### Adding Change Orders
 
-1. With a job selected, click **Change Orders** in the task bar
+1. With a job selected, click **🚀 CO Log** in the task bar
 2. Click **+ Add CO** to enter a new change order
 3. Fields include COP#, description, ATS pricing, sub pricing, and status tracking
-4. The summary bar at the top shows running totals:
-   - **ATS Base** — sum of all ATS Price entries
-   - **ATS Current** — Base Price plus all Accepted change orders
+4. The summary bar at the top shows running totals for ATS and Sub contracts
 
 ### Viewing All Project Details
 
-Click **Project Info** (next to Change Orders in the task bar) to open a popup showing every field entered for the job — owner, contractor, contract value, warranty, Div25 URL, and more.
+Click **ℹ️ Info** in the task bar to open a popup showing every field entered for the job — owner, contractor, contract value, warranty, Div25 URL, and more.
+
+### Viewing the Activity Log
+
+Click **📜 Activity** in the task bar to open the activity log for the selected project. Every task creation, edit, completion, and deletion is recorded with a timestamp and the user who made the change.
+
+- **Admin users** see a **Remove** button on each row to delete individual log entries (with confirmation)
 
 ### Importing a Job from an Odin Email
 
@@ -98,7 +119,8 @@ Click **Project Info** (next to Change Orders in the task bar) to open a popup s
 
 - **File → Export to Excel (.xlsx)** — generates a formatted Excel report for the selected job
 - **File → Export Snapshot (.json)** — saves a full JSON backup of the selected job
-- The **Export** button in the header also provides both options
+- **File → Bulk Export to Excel...** — pick multiple projects and export them all into a single workbook, one set of sheets per project
+- The **Export** button in the header also provides single-project options
 
 ### Sorting the Project List
 
@@ -118,7 +140,19 @@ All users can share a single database by pointing the app at a synced folder (Sh
 5. Click **OK** — if no data file exists there yet, the app will offer to copy your existing data over
 6. Repeat steps 3–5 on every user's machine, pointing to their local copy of the same synced folder
 
-> **Note:** Avoid having two people save changes at the exact same time — if OneDrive detects a conflict it will create a conflict copy. For a small team this is rarely an issue in practice.
+> **Note:** The app automatically retries saves if OneDrive briefly locks the data file during sync. Conflicts are rare on a small team but can occur if two users save simultaneously.
+
+### User Accounts and Roles
+
+Accounts are managed by an admin via **File → Manage Users...**
+
+| Role | Can do |
+|------|--------|
+| **Admin** | Everything — create/edit/delete projects and tasks, manage users, remove activity log entries |
+| **User** | Create/edit/delete projects and tasks; cannot manage user accounts |
+| **View Only** | Read-only access — can view all data but cannot make any changes |
+
+Use **File → Change My Password...** to update your own password at any time.
 
 ### Using Dark Mode / Light Mode
 
@@ -145,6 +179,7 @@ Click **Help → Hide Test Jobs** to remove them from the sidebar. Test jobs are
 ```
 project_tracker_gui.py       — Main UI
 project_tracker_backend.py   — Data and storage logic
+user_auth.py                 — User account and authentication system
 updater.py                   — Auto-update system
 version.py                   — Current version number
 build.bat                    — Builds the exe, installer, and zips (developers only)
