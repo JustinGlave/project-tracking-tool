@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.0.25**
+**Current Version: v1.1.0**
 
 ---
 
@@ -25,7 +25,7 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - Sort the project list by Last Updated, Name, or Job Number — ascending or descending
 - **Shared database** — point all users to a shared folder (SharePoint / OneDrive) so everyone works from the same data in real time
 - Export a single project to Excel or JSON snapshot
-- Dark mode / light mode toggle with preference saved across sessions
+- **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder
 - Auto-updates — when a new version is released, the app notifies you and installs it with one click
 
@@ -72,7 +72,7 @@ If you selected the wrong template when creating a job, you can reset it:
 
 - Click **Add Task** to add a custom task
 - Check the **Done** checkbox on any row to mark a task complete
-- Use **Edit** / **Del** buttons on each row to modify or remove individual tasks
+- **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**
 - Set a **Due Date** on any task — overdue incomplete tasks highlight red automatically
 - **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
@@ -154,10 +154,6 @@ Accounts are managed by an admin via **File → Manage Users...**
 
 Use **File → Change My Password...** to update your own password at any time.
 
-### Using Dark Mode / Light Mode
-
-Go to **View → Dark Mode** to toggle between dark and light themes. Your preference is saved and restored on next launch.
-
 ### Training Mode — Test Jobs
 
 Use **Help → Show Test Jobs** to load 5 pre-built demo jobs covering a range of scenarios:
@@ -182,6 +178,7 @@ project_tracker_backend.py   — Data and storage logic
 user_auth.py                 — User account and authentication system
 updater.py                   — Auto-update system
 version.py                   — Current version number
+phoenix_style.qss            — Phoenix Controls unified QSS stylesheet
 build.bat                    — Builds the exe, installer, and zips (developers only)
 installer.iss                — Inno Setup installer script (developers only)
 PTT_Normal.ico               — App icon
@@ -223,6 +220,7 @@ Users will see an update banner in the app automatically on next launch. The ban
 
 - Python 3
 - PySide6 (Qt for Python)
+- Phoenix Controls Unified Design System (dark navy QSS theme)
 - openpyxl (Excel export)
 - PyInstaller (exe packaging)
 - Inno Setup 6 (installer)

@@ -57,7 +57,7 @@ def _backup_data_file(data_path: Path) -> None:
 from typing import Any, Optional
 
 from PySide6.QtCore import QDate, QFileSystemWatcher, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPalette, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -2301,7 +2301,7 @@ class MainWindow(QMainWindow):
         _tf.setPointSize(9)
         _sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        def _toolbar_btn(label: str, max_w: int, tip: str = "", cls=SecondaryButton) -> QPushButton:
+        def _toolbar_btn(label: str, max_w: int, tip: str = "", cls: type[QPushButton] = SecondaryButton) -> QPushButton:
             btn = cls(label)
             btn.setMaximumWidth(max_w)
             btn.setMinimumWidth(36)
@@ -2378,9 +2378,9 @@ class MainWindow(QMainWindow):
 
         wrapper_layout.addLayout(top_row)
 
-        self.task_table = ReorderableTaskTable(0, 7)
+        self.task_table = ReorderableTaskTable(0, 6)
         self.task_table.setHorizontalHeaderLabels(
-            ["Done", "Task", "Phase", "Due Date", "Completed Date", "Notes", "Actions"]
+            ["Done", "Task", "Phase", "Due Date", "Completed Date", "Notes"]
         )
         self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -2400,7 +2400,6 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         header.setStretchLastSection(False)
         # Default column widths
         header.resizeSection(1, 280)
@@ -2412,6 +2411,8 @@ class MainWindow(QMainWindow):
 
         self.task_table.doubleClicked.connect(self._on_task_double_clicked)
         self.task_table.rowsReordered.connect(self._on_tasks_reordered)
+        self.task_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.task_table.customContextMenuRequested.connect(self._on_task_context_menu)
 
         wrapper_layout.addWidget(self.task_table, 1)
         return wrapper
@@ -3534,7 +3535,6 @@ class MainWindow(QMainWindow):
 
                 self.task_table.setItem(row_index, 4, QTableWidgetItem(task.completed_date or ""))
                 self.task_table.setItem(row_index, 5, QTableWidgetItem(task.notes or ""))
-                self.task_table.setCellWidget(row_index, 6, self._task_actions_widget(task))
 
                 for column_index in range(1, 6):
                     item = self.task_table.item(row_index, column_index)
@@ -3544,29 +3544,33 @@ class MainWindow(QMainWindow):
         finally:
             self._populating = False
 
-    def _task_actions_widget(self, task: TaskRecord) -> QWidget:
-        container = QWidget()
-        if self._current_user_view_only():
-            return container
+    def _on_task_context_menu(self, pos) -> None:
+        menu = QMenu(self)
 
-        button_layout = QHBoxLayout(container)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(4)
+        add_action = QAction("Add Task", self)
+        add_action.triggered.connect(self.add_task)
+        menu.addAction(add_action)
 
-        task_id = task.id
-        assert task_id is not None
+        if not self._current_user_view_only():
+            item = self.task_table.itemAt(pos)
+            row = self.task_table.rowAt(pos.y()) if item is None else item.row()
+            task_id = None
+            if row >= 0:
+                id_item = self.task_table.item(row, 1)
+                if id_item:
+                    task_id = id_item.data(Qt.ItemDataRole.UserRole)
 
-        edit_button = QToolButton()
-        edit_button.setText("Edit")
-        edit_button.clicked.connect(lambda: self.edit_task(task_id))
+            if task_id is not None:
+                menu.addSeparator()
+                edit_action = QAction("Edit Task", self)
+                edit_action.triggered.connect(lambda: self.edit_task(task_id))
+                menu.addAction(edit_action)
 
-        delete_button = QToolButton()
-        delete_button.setText("Del")
-        delete_button.clicked.connect(lambda: self.delete_task(task_id))
+                delete_action = QAction("Delete Task", self)
+                delete_action.triggered.connect(lambda: self.delete_task(task_id))
+                menu.addAction(delete_action)
 
-        button_layout.addWidget(edit_button)
-        button_layout.addWidget(delete_button)
-        return container
+        menu.exec(self.task_table.viewport().mapToGlobal(pos))
 
     @staticmethod
     def _centered_widget(widget: QWidget) -> QWidget:
@@ -4063,7 +4067,7 @@ QTableWidget::item:hover, QTableView::item:hover { background-color: #1f2937; }
 QHeaderView::section { background-color: rgba(5, 8, 16, 180); color: #e5e7eb; padding: 6px 8px; border: none; border-right: 1px solid #2d3748; border-bottom: 1px solid #2d3748; font-weight: 600; }
 QHeaderView::section:hover { background-color: #1f2937; }
 QListWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 8px; color: #ffffff; }
-QListWidget::item { border-radius: 6px; padding: 8px; margin: 2px 0; color: #ffffff; }
+QListWidget::item { background: transparent; border-radius: 6px; padding: 8px; margin: 2px 0; color: #ffffff; }
 QListWidget::item:selected { background: #1e3a8a; color: white; }
 QListWidget::item:hover:!selected { background: #1f2937; }
 QTreeWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 4px; color: #ececec; outline: none; }
@@ -4130,7 +4134,7 @@ def main() -> int:
 
     # ── User login ──────────────────────────────────────────────────────── #
     # Resolve the users.json path from the configured data folder.
-    custom_folder = str(settings.value("dataFolder", "")).strip()
+    custom_folder = str(  settings.value("dataFolder", "")).strip()
     if custom_folder:
         users_path = Path(custom_folder) / "users.json"
     else:

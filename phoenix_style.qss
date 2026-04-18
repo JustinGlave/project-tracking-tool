@@ -402,6 +402,35 @@ QHeaderView::section:hover {
 }
 
 /* ============================================================================
+   LIST WIDGET (project sidebar)
+   ============================================================================ */
+
+QListWidget {
+    background: transparent;
+    border: 1px solid #2d3748;
+    border-radius: 10px;
+    padding: 8px;
+    color: #ffffff;
+}
+
+QListWidget::item {
+    background: transparent;
+    border-radius: 6px;
+    padding: 8px;
+    margin: 2px 0;
+    color: #ffffff;
+}
+
+QListWidget::item:selected {
+    background: #1e3a8a;
+    color: white;
+}
+
+QListWidget::item:hover:!selected {
+    background: #1f2937;
+}
+
+/* ============================================================================
    TREE WIDGET (sidebar nav)
    ============================================================================ */
 
