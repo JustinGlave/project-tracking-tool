@@ -284,6 +284,47 @@ class ProjectDialog(QDialog):
         super().accept()
 
 
+# ── Phoenix component helpers ──────────────────────────────────────────────────
+
+class PrimaryButton(QPushButton):
+    """Red primary-action button per Phoenix design system."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setMinimumHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+
+class SecondaryButton(QPushButton):
+    """Blue secondary-action button per Phoenix design system."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("secondaryButton")
+        self.setMinimumHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+
+class TertiaryButton(QPushButton):
+    """Outline low-emphasis button per Phoenix design system."""
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("tertiaryButton")
+        self.setMinimumHeight(36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+
+class PhoenixTable(QTableWidget):
+    """Read-only display table with Phoenix styling defaults."""
+    def __init__(self, rows: int, cols: int, parent=None):
+        super().__init__(rows, cols, parent)
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAlternatingRowColors(True)
+
+
+# ── Drag-reorder table ────────────────────────────────────────────────────────
+
 class ReorderableTaskTable(QTableWidget):
     """QTableWidget with internal row drag-drop that emits rowsReordered after a drop."""
 
@@ -459,7 +500,7 @@ class NotesWindow(QDialog):
         toolbar.addWidget(title_lbl)
         toolbar.addStretch()
         if not view_only:
-            add_btn = QPushButton("+ Add Note")
+            add_btn = PrimaryButton("+ Add Note")
             add_btn.setFixedWidth(110)
             add_btn.clicked.connect(self._add_note)
             toolbar.addWidget(add_btn)
@@ -494,15 +535,15 @@ class NotesWindow(QDialog):
         # Bottom buttons
         btn_row = QHBoxLayout()
         if not view_only:
-            edit_btn = QPushButton("Edit")
+            edit_btn = PrimaryButton("Edit")
             edit_btn.setFixedWidth(90)
             edit_btn.clicked.connect(self._edit_selected)
-            del_btn = QPushButton("Delete")
+            del_btn = PrimaryButton("Delete")
             del_btn.setFixedWidth(90)
             del_btn.clicked.connect(self._delete_selected)
             btn_row.addWidget(edit_btn)
             btn_row.addWidget(del_btn)
-        close_btn  = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.setFixedWidth(90)
         close_btn.clicked.connect(self.accept)
         btn_row.addStretch()
@@ -750,7 +791,7 @@ class ChangeOrderWindow(QDialog):
         toolbar = QHBoxLayout()
         toolbar.addStretch()
         if not view_only:
-            add_btn = QPushButton("+ Add CO")
+            add_btn = PrimaryButton("+ Add CO")
             add_btn.setFixedWidth(100)
             add_btn.clicked.connect(self._add_co)
             toolbar.addWidget(add_btn)
@@ -801,11 +842,11 @@ class ChangeOrderWindow(QDialog):
         # ── Bottom buttons ────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
         if not view_only:
-            edit_btn = QPushButton("Edit");   edit_btn.setFixedWidth(80);  edit_btn.clicked.connect(self._edit_selected)
-            del_btn  = QPushButton("Delete"); del_btn.setFixedWidth(80);   del_btn.clicked.connect(self._delete_selected)
+            edit_btn = PrimaryButton("Edit");   edit_btn.setFixedWidth(80);  edit_btn.clicked.connect(self._edit_selected)
+            del_btn  = PrimaryButton("Delete"); del_btn.setFixedWidth(80);   del_btn.clicked.connect(self._delete_selected)
             btn_row.addWidget(edit_btn)
             btn_row.addWidget(del_btn)
-        close_btn = QPushButton("Close");  close_btn.setFixedWidth(80); close_btn.clicked.connect(self.accept)
+        close_btn = TertiaryButton("Close"); close_btn.setFixedWidth(80); close_btn.clicked.connect(self.accept)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
@@ -1160,7 +1201,7 @@ class UpdateBanner(QFrame):
         layout.addWidget(msg, 1)
 
         if info.release_notes:
-            notes_btn = QPushButton("What's new?")
+            notes_btn = TertiaryButton("What's new?")
             notes_btn.setFixedWidth(120)
             notes_btn.clicked.connect(lambda: QMessageBox.information(
                 self, f"What's new in v{info.latest_version}",
@@ -1174,7 +1215,7 @@ class UpdateBanner(QFrame):
         install_btn.clicked.connect(self.install_clicked)
         layout.addWidget(install_btn)
 
-        dismiss_btn = QPushButton("✕")
+        dismiss_btn = TertiaryButton("✕")
         dismiss_btn.setFixedWidth(44)
         dismiss_btn.setToolTip("Dismiss")
         dismiss_btn.clicked.connect(self.hide)
@@ -1301,14 +1342,14 @@ class DataLocationDialog(QDialog):
         path_row = QHBoxLayout()
         self.path_edit = QLineEdit(current_folder)
         self.path_edit.setPlaceholderText("e.g. C:\\Users\\you\\ATS Inc\\Phoenix - ATS Job Tracker")
-        browse_btn = QPushButton("Browse...")
+        browse_btn = SecondaryButton("Browse...")
         browse_btn.clicked.connect(self._browse)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(browse_btn)
         layout.addLayout(path_row)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #f87171;")
+        self.status_label.setObjectName("errorLabel")
         layout.addWidget(self.status_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)  # type: ignore[arg-type]
@@ -1354,17 +1395,17 @@ class LoginDialog(QDialog):
         form.addRow("Password:", self._password_edit)
 
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setObjectName("errorLabel")
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setVisible(False)
 
-        login_btn = QPushButton("Log In")
+        login_btn = PrimaryButton("Log In")
         login_btn.setDefault(True)
         login_btn.clicked.connect(self._attempt_login)
         self._password_edit.returnPressed.connect(self._attempt_login)
 
         forgot_lbl = QLabel("Forgot your password? Contact your administrator.")
-        forgot_lbl.setStyleSheet("color: #9ca3af; font-size: 11px;")
+        forgot_lbl.setObjectName("hint")
         forgot_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout = QVBoxLayout(self)
@@ -1415,11 +1456,11 @@ class ChangePasswordDialog(QDialog):
         self._confirm_edit.setPlaceholderText("Confirm new password")
 
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setObjectName("errorLabel")
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setVisible(False)
 
-        save_btn = QPushButton("Save Password")
+        save_btn = PrimaryButton("Save Password")
         save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
 
@@ -1482,12 +1523,12 @@ class SelfChangePasswordDialog(QDialog):
         layout.addLayout(form)
 
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setObjectName("errorLabel")
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setVisible(False)
         layout.addWidget(self._error_lbl)
 
-        save_btn = QPushButton("Save Password")
+        save_btn = PrimaryButton("Save Password")
         save_btn.setDefault(True)
         save_btn.clicked.connect(self._save)
         layout.addWidget(save_btn)
@@ -1546,7 +1587,7 @@ class ManageUsersDialog(QDialog):
         self._new_role_combo = QComboBox()
         for label, key in zip(self._ROLE_LABELS, self._ROLE_KEYS):
             self._new_role_combo.addItem(label, key)
-        add_btn = QPushButton("Add User")
+        add_btn = PrimaryButton("Add User")
         add_btn.clicked.connect(self._add_user)
         add_row.addWidget(self._new_username, 2)
         add_row.addWidget(self._new_password, 2)
@@ -1555,26 +1596,26 @@ class ManageUsersDialog(QDialog):
         layout.addLayout(add_row)
 
         self._error_lbl = QLabel("")
-        self._error_lbl.setStyleSheet("color: #f87171;")
+        self._error_lbl.setObjectName("errorLabel")
         self._error_lbl.setWordWrap(True)
         self._error_lbl.setVisible(False)
         layout.addWidget(self._error_lbl)
 
         # Action buttons
         btn_row = QHBoxLayout()
-        del_btn = QPushButton("Delete Selected User")
+        del_btn = PrimaryButton("Delete Selected User")
         del_btn.clicked.connect(self._delete_user)
-        reset_btn = QPushButton("Reset Password")
+        reset_btn = PrimaryButton("Reset Password")
         reset_btn.setToolTip("Set a temporary password — user must change it on next login")
         reset_btn.clicked.connect(self._reset_password)
-        role_btn = QPushButton("Change Role...")
+        role_btn = SecondaryButton("Change Role...")
         role_btn.clicked.connect(self._change_role)
         btn_row.addWidget(del_btn)
         btn_row.addWidget(reset_btn)
         btn_row.addWidget(role_btn)
         layout.addLayout(btn_row)
 
-        close_btn = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
@@ -1696,7 +1737,7 @@ class RecentChangesDialog(QDialog):
         layout.setSpacing(8)
 
         since_lbl = QLabel(f"Changes since last opened:  {since}")
-        since_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        since_lbl.setObjectName("hint")
         layout.addWidget(since_lbl)
 
         tree = QTreeWidget()
@@ -1731,7 +1772,7 @@ class RecentChangesDialog(QDialog):
 
         tree.collapseAll()
 
-        close_btn = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.clicked.connect(self.accept)
         layout.addWidget(close_btn)
 
@@ -1771,11 +1812,11 @@ class ActivityLogDialog(QDialog):
         self._layout.setSpacing(8)
 
         self._count_lbl = QLabel()
-        self._count_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        self._count_lbl.setObjectName("hint")
         self._layout.addWidget(self._count_lbl)
 
         col_count = 6 if is_admin else 5
-        self._table = QTableWidget(0, col_count)
+        self._table = PhoenixTable(0, col_count)
         headers = ["Timestamp", "User", "Action", "Item", "Details"]
         if is_admin:
             headers.append("")
@@ -1795,7 +1836,7 @@ class ActivityLogDialog(QDialog):
         self._table.setAlternatingRowColors(True)
         self._layout.addWidget(self._table)
 
-        close_btn = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.clicked.connect(self.accept)
         self._layout.addWidget(close_btn)
 
@@ -1817,9 +1858,8 @@ class ActivityLogDialog(QDialog):
                 self._table.setItem(row, col, item)
 
             if self._is_admin:
-                remove_btn = QPushButton("Remove")
+                remove_btn = SecondaryButton("Remove")
                 remove_btn.setFixedSize(80, 26)
-                remove_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
                 remove_btn.setProperty("activity_id", act.id)
                 remove_btn.clicked.connect(self._on_remove)
                 self._table.setCellWidget(row, 5, remove_btn)
@@ -1866,8 +1906,8 @@ class BulkExportDialog(QDialog):
         layout.addWidget(self._list)
 
         btn_row = QHBoxLayout()
-        sel_all = QPushButton("Select All")
-        sel_none = QPushButton("Select None")
+        sel_all = SecondaryButton("Select All")
+        sel_none = SecondaryButton("Select None")
         sel_all.clicked.connect(self._select_all)
         sel_none.clicked.connect(self._select_none)
         btn_row.addWidget(sel_all)
@@ -1972,7 +2012,7 @@ class MainWindow(QMainWindow):
         # Page 1: full app content
         app_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
         root_layout = QHBoxLayout(app_widget)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(0)
 
         sidebar = self._build_sidebar()
@@ -1986,7 +2026,7 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self._user_status_lbl = QLabel()
-        self._user_status_lbl.setStyleSheet("color: #888888; font-size: 9pt;")
+        self._user_status_lbl.setObjectName("hint")
         self.status_bar.addPermanentWidget(self._user_status_lbl)
         self.status_bar.showMessage("Ready")
         self._update_banner: Optional[UpdateBanner] = None
@@ -2005,17 +2045,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
 
         title = QLabel("Project Tracking Tool")
-        title.setObjectName("SectionTitle")
+        title.setObjectName("dialogTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 18pt; font-weight: bold;")
 
         msg = QLabel("You are logged out.")
-        msg.setStyleSheet("font-size: 13pt; color: #888888;")
+        msg.setObjectName("dialogSubtitle")
         msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        login_btn = QPushButton("Log In")
+        login_btn = PrimaryButton("Log In")
         login_btn.setFixedWidth(140)
-        login_btn.setFixedHeight(36)
         login_btn.clicked.connect(self._do_login)
 
         layout.addStretch(1)
@@ -2032,7 +2070,7 @@ class MainWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("Panel")
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(14, 14, 14, 14)
+        panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(10)
 
         title_label = QLabel("Projects")
@@ -2063,17 +2101,17 @@ class MainWindow(QMainWindow):
         panel_layout.addLayout(sort_row)
 
         button_row = QHBoxLayout()
-        self.new_project_btn = QPushButton("New")
+        self.new_project_btn = PrimaryButton("New")
         self.new_project_btn.setMinimumWidth(72)
         self.new_project_btn.clicked.connect(self.create_project)
-        self.import_btn = QPushButton("Import")
+        self.import_btn = SecondaryButton("Import")
         self.import_btn.setMinimumWidth(100)
         self.import_btn.clicked.connect(self.import_workbook)
         button_row.addWidget(self.new_project_btn)
         button_row.addWidget(self.import_btn)
         panel_layout.addLayout(button_row)
 
-        self.import_email_btn = QPushButton("📧 Import Email")
+        self.import_email_btn = SecondaryButton("📧 Import Email")
         self.import_email_btn.setMinimumWidth(160)
         self.import_email_btn.setToolTip("Import project from Odin assignment email (.eml)")
         self.import_email_btn.clicked.connect(self.import_email)
@@ -2092,17 +2130,14 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(self._fin_data_label)
 
         secondary_row = QHBoxLayout()
-        self.edit_project_btn = QPushButton("Edit")
+        self.edit_project_btn = SecondaryButton("Edit")
         self.edit_project_btn.setMinimumWidth(72)
-        self.edit_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.edit_project_btn.clicked.connect(self.edit_current_project)
-        self.delete_project_btn = QPushButton("Delete")
+        self.delete_project_btn = PrimaryButton("Delete")
         self.delete_project_btn.setMinimumWidth(72)
-        self.delete_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.delete_project_btn.clicked.connect(self.delete_current_project)
-        self.pin_project_btn = QPushButton("📌 Pin")
+        self.pin_project_btn = SecondaryButton("📌 Pin")
         self.pin_project_btn.setMinimumWidth(72)
-        self.pin_project_btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.pin_project_btn.setToolTip("Pin this project to the top of the list")
         self.pin_project_btn.clicked.connect(self._toggle_pin)
         secondary_row.addWidget(self.edit_project_btn)
@@ -2226,7 +2261,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(sep2)
 
         # Export button with dropdown menu
-        self.export_btn = QPushButton("Export")
+        self.export_btn = SecondaryButton("Export")
         self.export_btn.setFixedWidth(92)
         export_menu = QMenu(self.export_btn)
         export_menu.addAction("Export to Excel (.xlsx)", self.export_excel)
@@ -2242,6 +2277,7 @@ class MainWindow(QMainWindow):
         wrapper_layout.addWidget(self.progress_bar)
 
         self.project_subtitle = QLabel()
+        self.project_subtitle.setObjectName("ProjectSubtitle")
         self.project_subtitle.hide()
         self.project_notes = QPlainTextEdit()
         self.project_notes.hide()
@@ -2265,13 +2301,11 @@ class MainWindow(QMainWindow):
         _tf.setPointSize(9)
         _sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        def _toolbar_btn(label: str, max_w: int, tip: str = "") -> QPushButton:
-            btn = QPushButton(label)
+        def _toolbar_btn(label: str, max_w: int, tip: str = "", cls=SecondaryButton) -> QPushButton:
+            btn = cls(label)
             btn.setMaximumWidth(max_w)
             btn.setMinimumWidth(36)
-            btn.setFont(_tf)
             btn.setSizePolicy(_sp)
-            btn.setStyleSheet("padding-left: 4px; padding-right: 4px;")
             if tip:
                 btn.setToolTip(tip)
             return btn
@@ -2302,14 +2336,12 @@ class MainWindow(QMainWindow):
         self.phase_filter.setMaximumWidth(118)
         self.phase_filter.setMinimumWidth(36)
         self.phase_filter.setSizePolicy(_sp)
-        self.phase_filter.setFont(_tf)
-        self.phase_filter.setStyleSheet("padding-left: 3px; padding-right: 3px;")
         self.phase_filter.addItem("All phases")
         self.phase_filter.addItems(PHASES)
         self.phase_filter.currentTextChanged.connect(self.populate_tasks)
         top_row.addWidget(self.phase_filter)
 
-        self.add_task_btn = _toolbar_btn("Add Task", 92)
+        self.add_task_btn = _toolbar_btn("Add Task", 92, cls=PrimaryButton)
         self.add_task_btn.clicked.connect(self.add_task)
         top_row.addWidget(self.add_task_btn)
 
@@ -2317,8 +2349,6 @@ class MainWindow(QMainWindow):
         self.task_search_edit.setMaximumWidth(110)
         self.task_search_edit.setMinimumWidth(36)
         self.task_search_edit.setSizePolicy(_sp)
-        self.task_search_edit.setFont(_tf)
-        self.task_search_edit.setStyleSheet("padding-left: 4px; padding-right: 4px;")
         self.task_search_edit.setPlaceholderText("Filter tasks...")
         self.task_search_edit.textChanged.connect(self.populate_tasks)
         top_row.addWidget(self.task_search_edit)
@@ -2330,8 +2360,6 @@ class MainWindow(QMainWindow):
         self.template_apply_combo.setMaximumWidth(108)
         self.template_apply_combo.setMinimumWidth(36)
         self.template_apply_combo.setSizePolicy(_sp)
-        self.template_apply_combo.setFont(_tf)
-        self.template_apply_combo.setStyleSheet("padding-left: 3px; padding-right: 3px;")
         self.template_apply_combo.activated.connect(self._apply_template_from_combo)
         top_row.addWidget(self.template_apply_combo)
 
@@ -2343,7 +2371,7 @@ class MainWindow(QMainWindow):
         self.bulk_uncomplete_btn.clicked.connect(self._bulk_uncomplete_tasks)
         top_row.addWidget(self.bulk_uncomplete_btn)
 
-        self.compact_btn = _toolbar_btn("⊟ Compact", 100, "Toggle compact row view")
+        self.compact_btn = _toolbar_btn("⊟ Compact", 100, "Toggle compact row view", cls=TertiaryButton)
         self.compact_btn.setCheckable(True)
         self.compact_btn.clicked.connect(self._toggle_compact_view)
         top_row.addWidget(self.compact_btn)
@@ -2542,7 +2570,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        close_btn = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.clicked.connect(dlg.accept)
 
         layout = QVBoxLayout(dlg)
@@ -3060,13 +3088,10 @@ class MainWindow(QMainWindow):
         # ── View menu ──────────────────────────────────────────────────────────
         view_menu = self.menuBar().addMenu("View")
 
-        self._dark_mode_action = QAction("Dark Mode", self)
-        self._dark_mode_action.setCheckable(True)
-        settings = QSettings("ATSInc", "ProjectTrackingTool")
-        dark_on = settings.value("darkMode", "true") != "false"
-        self._dark_mode_action.setChecked(dark_on)
-        self._dark_mode_action.triggered.connect(self._toggle_dark_mode)
-        view_menu.addAction(self._dark_mode_action)
+        refresh_action = QAction("Refresh", self)
+        refresh_action.setShortcut(QKeySequence("F5"))
+        refresh_action.triggered.connect(self.refresh_project_list)
+        view_menu.addAction(refresh_action)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu("Help")
@@ -3112,7 +3137,7 @@ class MainWindow(QMainWindow):
         text_area.setObjectName("ReadOnlyNotes")
         layout.addWidget(text_area, 1)
 
-        close_btn = QPushButton("Close")
+        close_btn = TertiaryButton("Close")
         close_btn.setFixedWidth(100)
         close_btn.clicked.connect(dialog.accept)
         btn_row = QHBoxLayout()
@@ -3196,17 +3221,6 @@ class MainWindow(QMainWindow):
             f"Built for the ATS team.\n"
             f"© 2026 Justin Glave",
         )
-
-    def _toggle_dark_mode(self) -> None:
-        dark = self._dark_mode_action.isChecked()
-        app = QApplication.instance()
-        if isinstance(app, QApplication):
-            if dark:
-                apply_dark_theme(app)
-            else:
-                apply_light_theme(app)
-        settings = QSettings("ATSInc", "ProjectTrackingTool")
-        settings.setValue("darkMode", "true" if dark else "false")
 
     @staticmethod
     def _email_support() -> None:
@@ -3301,6 +3315,7 @@ class MainWindow(QMainWindow):
             layout.setSpacing(3)
 
             num_lbl = QLabel(project.job_number or "")
+            num_lbl.setObjectName("hint")
             layout.addWidget(num_lbl)
 
             name_lbl = QLabel(job_name)
@@ -3988,423 +4003,130 @@ class MainWindow(QMainWindow):
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
 
-def apply_light_theme(app: QApplication) -> None:
+_EMBEDDED_QSS = """
+QMainWindow { background-color: #0a0e27; color: #ffffff; }
+QWidget { color: #ffffff; font-family: "Segoe UI", Arial, sans-serif; font-size: 11pt; }
+QMenuBar { background-color: #0a0e27; color: #ffffff; border-bottom: 1px solid #2d3748; padding: 4px 0px; spacing: 16px; }
+QMenuBar::item:selected { background-color: #1f2937; color: #3b82f6; }
+QMenuBar::item:pressed { background-color: #1e3a8a; }
+QMenu { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 4px; padding: 4px 0px; }
+QMenu::item { padding: 8px 16px; }
+QMenu::item:selected { background-color: #1f2937; color: #3b82f6; }
+QMenu::item:pressed { background-color: #1e3a8a; }
+QMenu::separator { background-color: #2d3748; height: 1px; margin: 4px 0px; }
+QPushButton, QToolButton { background-color: #dc2626; color: #ffffff; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 600; font-size: 11pt; }
+QPushButton:hover, QToolButton:hover { background-color: #b91c1c; }
+QPushButton:pressed, QToolButton:pressed { background-color: #991b1b; }
+QPushButton:focus { outline: none; border: 2px solid #3b82f6; }
+QPushButton:disabled, QToolButton:disabled { background-color: #4b5563; color: #6b7280; }
+QPushButton#secondaryButton { background-color: #1e3a8a; }
+QPushButton#secondaryButton:hover { background-color: #1e40af; }
+QPushButton#tertiaryButton { background-color: transparent; border: 1px solid #4b5563; color: #3b82f6; }
+QPushButton#tertiaryButton:hover { background-color: #1f2937; border: 1px solid #3b82f6; }
+QLineEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; selection-background-color: #3b82f6; }
+QLineEdit:focus { border: 2px solid #3b82f6; }
+QLineEdit:disabled { background-color: #050810; color: #6b7280; }
+QTextEdit, QPlainTextEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; selection-background-color: #3b82f6; }
+QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid #3b82f6; }
+QComboBox { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
+QComboBox:focus { border: 2px solid #3b82f6; }
+QComboBox:disabled { background-color: #050810; color: #6b7280; }
+QComboBox::drop-down { border: none; padding-right: 8px; }
+QComboBox QAbstractItemView { background-color: #141829; color: #ffffff; selection-background-color: #3b82f6; border: 1px solid #2d3748; outline: none; }
+QDateEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
+QDateEdit:focus { border: 2px solid #3b82f6; }
+QSpinBox, QDoubleSpinBox { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
+QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #3b82f6; }
+QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button { background-color: #050810; border: none; width: 20px; }
+QCheckBox { color: #ffffff; spacing: 8px; }
+QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #4b5563; background-color: #141829; }
+QCheckBox::indicator:hover { border: 1px solid #3b82f6; background-color: #1f2937; }
+QCheckBox::indicator:checked { background-color: #10b981; border: 1px solid #10b981; }
+QLabel { color: #ffffff; font-family: "Segoe UI", sans-serif; }
+QLabel#ProjectTitle { font-size: 14pt; font-weight: 700; color: #ffffff; }
+QLabel#ProjectSubtitle { color: #9ca3af; font-size: 10pt; }
+QLabel#SectionTitle { font-size: 12pt; font-weight: 600; color: #ffffff; }
+QLabel#StatTitle { color: #9ca3af; font-size: 7pt; }
+QLabel#StatValue { font-size: 10pt; font-weight: 700; }
+QLabel#FinDataMeta { color: #9ca3af; font-size: 8pt; }
+QLabel#MetaCaption { color: #9ca3af; font-size: 9pt; font-weight: 600; }
+QLabel#MetaValue { color: #d1d5db; font-size: 9pt; }
+QTabWidget::pane { border: 1px solid #2d3748; background-color: #141829; }
+QTabBar::tab { background-color: #050810; color: #9ca3af; padding: 6px 18px; border: 1px solid #2d3748; border-bottom: none; border-radius: 6px 6px 0 0; font-weight: 500; }
+QTabBar::tab:selected { background-color: #141829; color: #ffffff; font-weight: 600; border-bottom: 3px solid #dc2626; }
+QTabBar::tab:hover:!selected { background-color: #1f2937; color: #d1d5db; }
+QTableWidget, QTableView { background-color: transparent; alternate-background-color: rgba(10, 14, 39, 140); gridline-color: #2d3748; border: 1px solid #2d3748; border-radius: 6px; color: #ffffff; }
+QTableWidget::item, QTableView::item { background-color: rgba(20, 24, 41, 140); padding: 3px 6px; border: none; color: #ffffff; }
+QTableWidget::item:alternate, QTableView::item:alternate { background-color: rgba(10, 14, 39, 140); }
+QTableWidget::item:selected, QTableView::item:selected { background-color: #1e40af; color: #ffffff; }
+QTableWidget::item:hover, QTableView::item:hover { background-color: #1f2937; }
+QHeaderView::section { background-color: rgba(5, 8, 16, 180); color: #e5e7eb; padding: 6px 8px; border: none; border-right: 1px solid #2d3748; border-bottom: 1px solid #2d3748; font-weight: 600; }
+QHeaderView::section:hover { background-color: #1f2937; }
+QListWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 8px; color: #ffffff; }
+QListWidget::item { border-radius: 6px; padding: 8px; margin: 2px 0; color: #ffffff; }
+QListWidget::item:selected { background: #1e3a8a; color: white; }
+QListWidget::item:hover:!selected { background: #1f2937; }
+QTreeWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 4px; color: #ececec; outline: none; }
+QTreeWidget::item { border-radius: 6px; padding: 5px 8px; margin: 1px 0; }
+QTreeWidget::item:selected { background: #1e3a8a; color: white; }
+QTreeWidget::item:hover:!selected { background: #1f2937; }
+QScrollBar:vertical { background-color: #0a0e27; width: 8px; border: none; }
+QScrollBar::handle:vertical { background-color: #4b5563; border-radius: 4px; min-height: 20px; }
+QScrollBar::handle:vertical:hover { background-color: #6b7280; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; background: none; }
+QScrollBar:horizontal { background-color: #0a0e27; height: 8px; border: none; }
+QScrollBar::handle:horizontal { background-color: #4b5563; border-radius: 4px; min-width: 20px; }
+QScrollBar::handle:horizontal:hover { background-color: #6b7280; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; border: none; background: none; }
+QGroupBox { color: #ffffff; border: 1px solid #2d3748; border-radius: 8px; margin-top: 12px; padding-top: 12px; font-weight: 600; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0px 4px; }
+QDialog { background-color: #0a0e27; }
+QMessageBox QLabel { color: #ffffff; }
+QMessageBox QPushButton { min-width: 80px; }
+QSplitter::handle { background-color: #2d3748; }
+QSplitter::handle:hover { background-color: #3b82f6; }
+QFrame[frameShape="4"], QFrame[frameShape="5"] { border: 1px solid #2d3748; background-color: transparent; }
+QToolTip { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; padding: 6px 10px; border-radius: 4px; }
+QStatusBar { background-color: #050810; color: #d1d5db; border-top: 1px solid #2d3748; padding: 2px 12px; }
+QProgressBar { border: 1px solid #2d3748; border-radius: 6px; background-color: #050810; text-align: center; color: #ffffff; }
+QProgressBar::chunk { background-color: #dc2626; border-radius: 4px; }
+#Panel, #StatCard { background: rgba(20, 24, 41, 180); border: 1px solid #2d3748; border-radius: 14px; }
+#UpdateBanner { background: rgba(30, 58, 138, 220); border-top: 1px solid #3b82f6; }
+QLabel#UpdateMsg { color: #93c5fd; font-weight: 600; }
+#InstallBtn { background: #dc2626; border: 1px solid #ef4444; color: white; font-weight: 700; }
+#InstallBtn:hover { background: #b91c1c; }
+#RestoreBtn { background: #92400e; border: 1px solid #f59e0b; color: #f59e0b; font-weight: 700; }
+#RestoreBtn:hover { background: #b45309; }
+QLabel#PassBadge { background: #10b981; color: white; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 2px 6px; }
+QLabel#FailBadge { background: #ef4444; color: white; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 2px 6px; }
+QLabel#ArchivedBadge { background: #92400e; color: #f59e0b; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 0px 10px; }
+QFrame#ResizeHandle, QFrame#VResizeHandle { background: #2d3748; border: none; }
+QFrame#ResizeHandle:hover, QFrame#VResizeHandle:hover { background: #3b82f6; }
+QPushButton#Div25Btn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
+QPushButton#Div25Btn:hover { background: #2d5a8e; color: #87c3ff; }
+QPushButton#Div25Btn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
+QPlainTextEdit#ReadOnlyNotes { background: #050810; color: #9ca3af; border: 1px solid #2d3748; }
+QLabel#errorLabel { color: #ef4444; }
+QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }
+QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
+"""
+
+
+def apply_phoenix_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
-    palette = QPalette()
+    qss_path = str(_resource_path("phoenix_style.qss"))
+    if os.path.exists(qss_path):
+        with open(qss_path, "r") as fh:
+            app.setStyleSheet(fh.read())
+    else:
+        app.setStyleSheet(_EMBEDDED_QSS)
 
-    color_roles = [
-        (QPalette.ColorRole.Window, QColor(210, 212, 218)),
-        (QPalette.ColorRole.WindowText, QColor(25, 25, 25)),
-        (QPalette.ColorRole.Base, QColor(225, 227, 232)),
-        (QPalette.ColorRole.AlternateBase, QColor(200, 202, 208)),
-        (QPalette.ColorRole.ToolTipBase, QColor(255, 255, 220)),
-        (QPalette.ColorRole.ToolTipText, QColor(20, 20, 20)),
-        (QPalette.ColorRole.Text, QColor(25, 25, 25)),
-        (QPalette.ColorRole.Button, QColor(195, 198, 206)),
-        (QPalette.ColorRole.ButtonText, QColor(25, 25, 25)),
-        (QPalette.ColorRole.BrightText, QColor(180, 0, 0)),
-        (QPalette.ColorRole.Highlight, QColor(72, 124, 255)),
-        (QPalette.ColorRole.HighlightedText, QColor(255, 255, 255)),
-        (QPalette.ColorRole.Link, QColor(0, 90, 200)),
-    ]
-    for role, color in color_roles:
-        palette.setColor(role, color)
-
-    app.setPalette(palette)
-
-    app.setStyleSheet(
-        """
-        QWidget {
-            font-family: Segoe UI, Arial, sans-serif;
-            font-size: 11pt;
-        }
-        QMainWindow, QMenuBar, QMenu, QStatusBar {
-            background: #d2d4da;
-            color: #191919;
-        }
-        QMenuBar::item:selected, QMenu::item:selected {
-            background: #487cff;
-            color: white;
-        }
-        #Panel, #StatCard {
-            background: rgba(220, 222, 228, 200);
-            border: 1px solid #b0b4be;
-            border-radius: 14px;
-        }
-        QLabel#ProjectTitle {
-            font-size: 14pt;
-            font-weight: 700;
-            color: #111111;
-        }
-        QLabel#ProjectSubtitle {
-            color: #555b66;
-            font-size: 10pt;
-        }
-        QLabel#SectionTitle {
-            font-size: 12pt;
-            font-weight: 600;
-            color: #191919;
-        }
-        QLabel#StatTitle {
-            color: #555b66;
-            font-size: 7pt;
-        }
-        QLabel#StatValue {
-            font-size: 10pt;
-            font-weight: 700;
-            color: #191919;
-        }
-        QLabel#FinDataMeta {
-            color: #777777;
-            font-size: 8pt;
-        }
-        QPushButton, QToolButton {
-            background: #c3c6ce;
-            border: 1px solid #a8acb8;
-            border-radius: 10px;
-            padding: 6px 16px;
-            color: #191919;
-        }
-        QPushButton:hover, QToolButton:hover {
-            background: #b2b6c2;
-        }
-        QPushButton:pressed, QToolButton:pressed {
-            background: #a0a4b0;
-        }
-        QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {
-            background: #e1e3e8;
-            border: 1px solid #a8acb8;
-            border-radius: 10px;
-            padding: 8px;
-            color: #191919;
-            selection-background-color: #487cff;
-        }
-        QListWidget, QTableWidget {
-            background: transparent;
-            border: 1px solid #a8acb8;
-            border-radius: 10px;
-            padding: 8px;
-            color: #191919;
-            selection-background-color: #487cff;
-        }
-        QTableWidget::item {
-            background: rgba(215, 217, 223, 180);
-            border: none;
-            padding: 4px 8px;
-        }
-        QTableWidget::item:alternate {
-            background: rgba(200, 202, 208, 180);
-        }
-        QTableWidget::item:selected {
-            background: rgba(72, 124, 255, 180);
-            color: white;
-        }
-        QHeaderView::section {
-            background: rgba(195, 198, 206, 220);
-            color: #191919;
-            padding: 8px;
-            border: none;
-            border-right: 1px solid #a8acb8;
-            border-bottom: 1px solid #a8acb8;
-            font-weight: 600;
-        }
-        QPlainTextEdit#ReadOnlyNotes {
-            background: #c8cad0;
-            color: #4a5060;
-            border: 1px solid #a8acb8;
-        }
-        QGroupBox {
-            border: 1px solid #a8acb8;
-            border-radius: 12px;
-            margin-top: 10px;
-            padding-top: 12px;
-            font-weight: 600;
-            color: #191919;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 4px;
-        }
-        QLabel#MetaCaption {
-            color: #555b66;
-            font-size: 9pt;
-            font-weight: 600;
-        }
-        QLabel#MetaValue {
-            color: #252d3a;
-            font-size: 9pt;
-        }
-        QFrame#ResizeHandle {
-            background: #a8acb8;
-            border: none;
-        }
-        QFrame#ResizeHandle:hover {
-            background: #487cff;
-        }
-        QFrame#VResizeHandle {
-            background: #a8acb8;
-            border: none;
-            margin: 2px 0;
-        }
-        QFrame#VResizeHandle:hover {
-            background: #487cff;
-        }
-        QPushButton#Div25Btn {
-            background: #c5d8f0;
-            border: 1px solid #90b8e0;
-            border-radius: 6px;
-            color: #1a5ca8;
-            font-weight: 600;
-            padding: 2px 6px;
-        }
-        QPushButton#Div25Btn:hover {
-            background: #a8c8e8;
-            color: #0d3f7a;
-        }
-        QPushButton#Div25Btn:disabled {
-            background: #c8cad0;
-            border: 1px solid #b0b4be;
-            color: #888c98;
-        }
-        QListWidget::item {
-            border-radius: 10px;
-            padding: 10px;
-            margin: 2px 0;
-            color: #191919;
-        }
-        QListWidget::item:selected {
-            background: #487cff;
-            color: white;
-        }
-        #UpdateBanner {
-            background: rgba(195, 228, 205, 220);
-            border-top: 1px solid #5cb87a;
-        }
-        #UpdateBanner QLabel#UpdateMsg {
-            color: #1a6830;
-            font-weight: 600;
-        }
-        #InstallBtn {
-            background: #2d8a4a;
-            border: 1px solid #3daa5a;
-            color: white;
-            font-weight: 700;
-        }
-        #InstallBtn:hover {
-            background: #3daa5a;
-        }
-        """
-    )
-
-
-def apply_dark_theme(app: QApplication) -> None:
-    app.setStyle("Fusion")
-    palette = QPalette()
-
-    color_roles = [
-        (QPalette.ColorRole.Window, QColor(28, 28, 28)),
-        (QPalette.ColorRole.WindowText, QColor(230, 230, 230)),
-        (QPalette.ColorRole.Base, QColor(18, 18, 18)),
-        (QPalette.ColorRole.AlternateBase, QColor(35, 35, 35)),
-        (QPalette.ColorRole.ToolTipBase, QColor(240, 240, 240)),
-        (QPalette.ColorRole.ToolTipText, QColor(20, 20, 20)),
-        (QPalette.ColorRole.Text, QColor(230, 230, 230)),
-        (QPalette.ColorRole.Button, QColor(45, 45, 45)),
-        (QPalette.ColorRole.ButtonText, QColor(235, 235, 235)),
-        (QPalette.ColorRole.BrightText, QColor(255, 90, 90)),
-        (QPalette.ColorRole.Highlight, QColor(72, 124, 255)),
-        (QPalette.ColorRole.HighlightedText, QColor(255, 255, 255)),
-        (QPalette.ColorRole.Link, QColor(102, 169, 255)),
-    ]
-    for role, color in color_roles:
-        palette.setColor(role, color)
-
-    app.setPalette(palette)
-
-    app.setStyleSheet(
-        """
-        QWidget {
-            font-family: Segoe UI, Arial, sans-serif;
-            font-size: 11pt;
-        }
-        QMainWindow, QMenuBar, QMenu, QStatusBar {
-            background: #1c1c1c;
-            color: #e8e8e8;
-        }
-        #Panel, #StatCard {
-            background: rgba(38, 38, 38, 160);
-            border: 1px solid #3a3a3a;
-            border-radius: 14px;
-        }
-        QLabel#ProjectTitle {
-            font-size: 14pt;
-            font-weight: 700;
-        }
-        QLabel#ProjectSubtitle {
-            color: #999999;
-            font-size: 10pt;
-        }
-        QLabel#SectionTitle {
-            font-size: 12pt;
-            font-weight: 600;
-        }
-        QLabel#StatTitle {
-            color: #aaaaaa;
-            font-size: 7pt;
-        }
-        QLabel#StatValue {
-            font-size: 10pt;
-            font-weight: 700;
-        }
-        QLabel#FinDataMeta {
-            color: #666666;
-            font-size: 8pt;
-        }
-        QPushButton, QToolButton {
-            background: #383838;
-            border: 1px solid #505050;
-            border-radius: 10px;
-            padding: 6px 16px;
-        }
-        QPushButton:hover, QToolButton:hover {
-            background: #454545;
-        }
-        QPushButton:pressed, QToolButton:pressed {
-            background: #2a2a2a;
-        }
-        QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {
-            background: #121212;
-            border: 1px solid #404040;
-            border-radius: 10px;
-            padding: 8px;
-            color: #ececec;
-            selection-background-color: #487cff;
-        }
-        QListWidget, QTableWidget {
-            background: transparent;
-            border: 1px solid #404040;
-            border-radius: 10px;
-            padding: 8px;
-            color: #ececec;
-            selection-background-color: #487cff;
-        }
-        QTableWidget::item {
-            background: rgba(25, 25, 25, 140);
-            border: none;
-            padding: 4px 8px;
-        }
-        QTableWidget::item:alternate {
-            background: rgba(35, 35, 35, 140);
-        }
-        QTableWidget::item:selected {
-            background: rgba(72, 124, 255, 160);
-            color: white;
-        }
-        QHeaderView::section {
-            background: rgba(40, 40, 40, 180);
-            color: #e0e0e0;
-            padding: 8px;
-            border: none;
-            border-right: 1px solid #3a3a3a;
-            border-bottom: 1px solid #3a3a3a;
-            font-weight: 600;
-        }
-        QPlainTextEdit#ReadOnlyNotes {
-            background: #0a0a0a;
-            color: #888888;
-            border: 1px solid #303030;
-        }
-        QGroupBox {
-            border: 1px solid #3a3a3a;
-            border-radius: 12px;
-            margin-top: 10px;
-            padding-top: 12px;
-            font-weight: 600;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 12px;
-            padding: 0 4px;
-        }
-        QLabel#MetaCaption {
-            color: #888888;
-            font-size: 9pt;
-            font-weight: 600;
-        }
-        QLabel#MetaValue {
-            color: #cccccc;
-            font-size: 9pt;
-        }
-        QFrame#ResizeHandle {
-            background: #3a3a3a;
-            border: none;
-        }
-        QFrame#ResizeHandle:hover {
-            background: #487cff;
-        }
-        QFrame#VResizeHandle {
-            background: #3a3a3a;
-            border: none;
-            margin: 2px 0;
-        }
-        QFrame#VResizeHandle:hover {
-            background: #487cff;
-        }
-        QPushButton#Div25Btn {
-            background: #1e3a5f;
-            border: 1px solid #2d5a8e;
-            border-radius: 6px;
-            color: #5ba3f5;
-            font-weight: 600;
-            padding: 2px 6px;
-        }
-        QPushButton#Div25Btn:hover {
-            background: #2d5a8e;
-            color: #87c3ff;
-        }
-        QPushButton#Div25Btn:disabled {
-            background: #1a1a1a;
-            border: 1px solid #333333;
-            color: #555555;
-        }
-        QListWidget::item {
-            border-radius: 10px;
-            padding: 10px;
-            margin: 2px 0;
-        }
-        QListWidget::item:selected {
-            background: #2d4c8f;
-            color: white;
-        }
-        #UpdateBanner {
-            background: rgba(30, 60, 40, 220);
-            border-top: 1px solid #2d6a3f;
-        }
-        #UpdateBanner QLabel#UpdateMsg {
-            color: #6ee7a0;
-            font-weight: 600;
-        }
-        #InstallBtn {
-            background: #2d6a3f;
-            border: 1px solid #3d8a52;
-            color: white;
-            font-weight: 700;
-        }
-        #InstallBtn:hover {
-            background: #3d8a52;
-        }
-        """
-    )
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    apply_phoenix_theme(app)
     settings = QSettings("ATSInc", "ProjectTrackingTool")
-    if settings.value("darkMode", "true") != "false":
-        apply_dark_theme(app)
-    else:
-        apply_light_theme(app)
 
     # ── User login ──────────────────────────────────────────────────────── #
     # Resolve the users.json path from the configured data folder.
