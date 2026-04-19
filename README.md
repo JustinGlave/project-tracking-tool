@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.1.0**
+**Current Version: v1.2.0**
 
 ---
 
@@ -20,6 +20,7 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Bulk complete / uncomplete** — mark all visible tasks done or undone in one click (with confirmation)
 - **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
 - **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
+- **Financials Dashboard** — view financial data across all projects in one window, with separate tabs for active jobs, labor hours & cost, and warranty/archived jobs; sortable columns, live search, and totals row
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
 - Sort the project list by Last Updated, Name, or Job Number — ascending or descending
@@ -102,6 +103,26 @@ Click **📌 Pin** (bottom of the sidebar) to pin the selected project to the to
 
 Click **ℹ️ Info** in the task bar to open a popup showing every field entered for the job — owner, contractor, contract value, warranty, Div25 URL, and more.
 
+### Viewing the Financials Dashboard
+
+Click **📊 All Financials** in the sidebar (visible once a financial data file is configured) to open the dashboard.
+
+The dashboard shows financial data for all projects from your ODIN tracking workbook across four tabs:
+
+| Tab | Contents |
+|-----|----------|
+| **Financial Overview** | Active jobs — contract value, billed to date, actual cost, booked/actual/differential margins |
+| **Labor Hours & Cost** | Active jobs — PM hours, tech hours, total hours, PM cost, tech cost, total labor cost, labor budget remaining, total labor budget |
+| **Warranty & Archived** | Jobs with a warranty or archived status — same financial columns as the overview |
+
+- **Search bar** filters all tabs simultaneously by job #, name, PM, or status
+- **Click any column header** to sort by that column
+- **Double-click any row** to open the full per-project financial detail view
+- **Refresh** re-reads the ODIN workbook and updates all tabs
+- The totals row at the bottom of each tab sums money columns and averages margin percentages
+
+> Jobs with no name (blank or "0.0") are excluded from all tabs.
+
 ### Viewing the Activity Log
 
 Click **📜 Activity** in the task bar to open the activity log for the selected project. Every task creation, edit, completion, and deletion is recorded with a timestamp and the user who made the change.
@@ -175,6 +196,10 @@ Click **Help → Hide Test Jobs** to remove them from the sidebar. Test jobs are
 ```
 project_tracker_gui.py       — Main UI
 project_tracker_backend.py   — Data and storage logic
+financials_models.py         — FinancialSnapshot dataclass
+financials_excel.py          — ODIN Excel / JSON snapshot provider
+financials_dialog.py         — Per-project financial detail dialog
+financials_dashboard.py      — All-projects financials dashboard dialog
 user_auth.py                 — User account and authentication system
 updater.py                   — Auto-update system
 version.py                   — Current version number

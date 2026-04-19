@@ -125,6 +125,11 @@ class ExcelFinancialsProvider:
             return snap.last_refreshed or ""
         return ""
 
+    def get_all_financials(self) -> list[FinancialSnapshot]:
+        """Return all cached FinancialSnapshots, reading the file if needed."""
+        self._refresh_if_needed()
+        return list(self._cache.values())
+
     def get_financials(self, job_number: str) -> FinancialSnapshot:
         """Return a FinancialSnapshot for *job_number*, reading the file if needed."""
         key = _job_key(job_number)
@@ -327,6 +332,10 @@ class SnapshotFinancialsProvider:
         for snap in self._cache.values():
             return f"{snap.last_refreshed} (snapshot)" if snap.last_refreshed else ""
         return ""
+
+    def get_all_financials(self) -> list[FinancialSnapshot]:
+        """Return all cached FinancialSnapshots."""
+        return list(self._cache.values())
 
     def get_financials(self, job_number: str) -> FinancialSnapshot:
         key = _job_key(job_number)

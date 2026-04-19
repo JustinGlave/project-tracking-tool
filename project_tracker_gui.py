@@ -101,6 +101,7 @@ import shutil
 from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
+from financials_dashboard import FinancialsDashboardDialog
 from financials_excel import ExcelFinancialsProvider, SnapshotFinancialsProvider
 from user_auth import UserManager, UserRecord
 
@@ -2129,6 +2130,12 @@ class MainWindow(QMainWindow):
         self._fin_data_label.setVisible(False)
         panel_layout.addWidget(self._fin_data_label)
 
+        self.fin_dashboard_btn = SecondaryButton("📊 All Financials")
+        self.fin_dashboard_btn.setToolTip("View financial dashboard for all projects")
+        self.fin_dashboard_btn.setVisible(False)
+        self.fin_dashboard_btn.clicked.connect(self._open_financials_dashboard)
+        panel_layout.addWidget(self.fin_dashboard_btn)
+
         secondary_row = QHBoxLayout()
         self.edit_project_btn = SecondaryButton("Edit")
         self.edit_project_btn.setMinimumWidth(72)
@@ -2807,6 +2814,23 @@ class MainWindow(QMainWindow):
         dlg.exec()
         self.refresh_project_list()
 
+    def _open_financials_dashboard(self) -> None:
+        if self._financials_provider is None:
+            reply = QMessageBox.question(
+                self,
+                "No Financial Data File",
+                "No financial data file has been configured.\n\n"
+                "Would you like to select your ODIN tracking Excel file now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._open_financials_file_settings()
+            if self._financials_provider is None:
+                return
+
+        dlg = FinancialsDashboardDialog(provider=self._financials_provider, parent=self)
+        dlg.exec()
+
     def _check_sync_folder(self) -> None:
         """Warn if the app *executable* is running from a cloud-synced folder."""
         exe_path = str(Path(sys.executable).resolve()).lower()
@@ -3342,8 +3366,10 @@ class MainWindow(QMainWindow):
                 self._fin_data_label.setVisible(True)
             else:
                 self._fin_data_label.setVisible(False)
+            self.fin_dashboard_btn.setVisible(True)
         else:
             self._fin_data_label.setVisible(False)
+            self.fin_dashboard_btn.setVisible(False)
 
         if projects:
             target_row = 0
