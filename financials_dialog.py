@@ -97,9 +97,12 @@ class FinancialsDialog(QDialog):
         # ── Scrollable grid ──────────────────────────────────────────── #
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
         root.addWidget(scroll, 1)
 
         container = QWidget()
+        container.setStyleSheet("QWidget { background: transparent; }")
         scroll.setWidget(container)
         grid = QGridLayout(container)
         grid.setContentsMargins(0, 0, 0, 0)

@@ -1881,6 +1881,173 @@ class ActivityLogDialog(QDialog):
         self._populate()
 
 
+class TaskNotesHistoryDialog(QDialog):
+    """Unified notes view: shows the task's inline note plus the timestamped history thread.
+
+    Adding a note here updates task.notes (so the table column stays in sync) and
+    appends a TaskNoteRecord entry to the history.
+    """
+
+    notes_changed = Signal()
+
+    def __init__(
+        self,
+        task: TaskRecord,
+        backend: Any,
+        current_user: str,
+        is_admin: bool = False,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._task = task
+        self._backend = backend
+        self._current_user = current_user
+        self._is_admin = is_admin
+        self._dirty = False  # True if task.notes was modified here
+
+        self.setWindowTitle(f"Notes — {task.task_name}")
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(420)
+        self.resize(660, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        task_label = QLabel(f"Task: {task.task_name}  |  Phase: {task.phase}")
+        task_label.setObjectName("hint")
+        layout.addWidget(task_label)
+
+        self._notes_widget = QWidget()
+        self._notes_layout = QVBoxLayout(self._notes_widget)
+        self._notes_layout.setSpacing(6)
+        self._notes_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setWidget(self._notes_widget)
+        layout.addWidget(self._scroll, 1)
+
+        add_row = QHBoxLayout()
+        self._input = QPlainTextEdit()
+        self._input.setPlaceholderText("Add a note...")
+        self._input.setFixedHeight(72)
+        add_row.addWidget(self._input)
+
+        add_btn = PrimaryButton("Add Note")
+        add_btn.setFixedWidth(96)
+        add_btn.clicked.connect(self._add_note)
+        add_row.addWidget(add_btn, 0, Qt.AlignmentFlag.AlignBottom)
+        layout.addLayout(add_row)
+
+        close_btn = TertiaryButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        self._populate()
+
+    @property
+    def was_modified(self) -> bool:
+        return self._dirty
+
+    def _populate(self) -> None:
+        while self._notes_layout.count():
+            child = self._notes_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        history = self._backend.list_task_notes(self._task.id)
+
+        # Reload the task so we always show the current inline note value
+        refreshed = self._backend.list_tasks(self._task.project_id)
+        current_task = next((t for t in refreshed if t.id == self._task.id), self._task)
+        inline_note = (current_task.notes or "").strip()
+
+        has_content = bool(inline_note) or bool(history)
+
+        if not has_content:
+            empty = QLabel("No notes yet. Add the first one below.")
+            empty.setObjectName("hint")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._notes_layout.addWidget(empty)
+        else:
+            # Show the inline task note at the top if it isn't already the latest history entry
+            latest_history_content = history[-1].content.strip() if history else ""
+            if inline_note and inline_note != latest_history_content:
+                self._add_note_card(
+                    content=inline_note,
+                    meta="Task note (from task editor)",
+                    note_id=None,
+                )
+
+            for note in history:
+                ts = note.timestamp[:16].replace("T", " ")
+                self._add_note_card(
+                    content=note.content,
+                    meta=f"{ts}  —  {note.user}",
+                    note_id=note.id if self._is_admin else None,
+                )
+
+        self._notes_layout.addStretch()
+
+    def _add_note_card(self, content: str, meta: str, note_id: Optional[int]) -> None:
+        frame = QFrame()
+        frame.setObjectName("StatCard")
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(10, 6, 10, 6)
+        frame_layout.setSpacing(2)
+
+        header_row = QHBoxLayout()
+        meta_lbl = QLabel(meta)
+        meta_lbl.setObjectName("hint")
+        header_row.addWidget(meta_lbl)
+        header_row.addStretch()
+
+        if note_id is not None:
+            del_btn = TertiaryButton("✕")
+            del_btn.setFixedSize(26, 22)
+            del_btn.setProperty("note_id", note_id)
+            del_btn.clicked.connect(self._delete_note)
+            header_row.addWidget(del_btn)
+
+        frame_layout.addLayout(header_row)
+        content_lbl = QLabel(content)
+        content_lbl.setWordWrap(True)
+        frame_layout.addWidget(content_lbl)
+        self._notes_layout.addWidget(frame)
+
+    def _add_note(self) -> None:
+        text = self._input.toPlainText().strip()
+        if not text:
+            return
+        try:
+            # Update the task's inline notes field so the table column stays in sync
+            self._backend.update_task(self._task.id, notes=text)
+            # Append to the history thread
+            self._backend.add_task_note(self._task.id, text)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", str(exc))
+            return
+        self._dirty = True
+        self._input.clear()
+        self._populate()
+        # Scroll to bottom so the new entry is visible
+        self._scroll.verticalScrollBar().setValue(
+            self._scroll.verticalScrollBar().maximum()
+        )
+
+    def _delete_note(self) -> None:
+        btn = self.sender()
+        note_id = btn.property("note_id")
+        reply = QMessageBox.question(
+            self, "Delete Note", "Delete this note? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._backend.delete_task_note(note_id)
+        self._populate()
+
+
 class BulkExportDialog(QDialog):
     """Let the user pick multiple projects to export into one Excel workbook."""
 
@@ -2074,9 +2241,17 @@ class MainWindow(QMainWindow):
         panel_layout.setContentsMargins(16, 16, 16, 16)
         panel_layout.setSpacing(10)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
         title_label = QLabel("Projects")
         title_label.setObjectName("SectionTitle")
-        panel_layout.addWidget(title_label)
+        title_row.addWidget(title_label, 1)
+        self._home_btn = TertiaryButton("⌂ Home")
+        self._home_btn.setFixedWidth(90)
+        self._home_btn.setToolTip("Show dashboard home screen")
+        self._home_btn.clicked.connect(self._show_home)
+        title_row.addWidget(self._home_btn)
+        panel_layout.addLayout(title_row)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search jobs, PM, sales engineer...")
@@ -2155,20 +2330,175 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_main_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        main_layout = QVBoxLayout(panel)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        outer = QWidget()
+        outer.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self._main_stack = QStackedWidget()
+        self._main_stack.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self._dashboard_widget = self._build_dashboard()
+        self._main_stack.addWidget(self._dashboard_widget)
+
+        project_panel = QWidget()
+        project_panel.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        project_layout = QVBoxLayout(project_panel)
+        project_layout.setContentsMargins(0, 0, 0, 0)
+        project_layout.setSpacing(0)
 
         self._header_widget = self._build_project_header()
-        main_layout.addWidget(self._header_widget, 0)
+        project_layout.addWidget(self._header_widget, 0)
 
-        v_handle = _VResizeHandle(self._header_widget, panel)
-        main_layout.addWidget(v_handle)
+        v_handle = _VResizeHandle(self._header_widget, project_panel)
+        project_layout.addWidget(v_handle)
 
-        main_layout.addWidget(self._build_task_table(), 1)
-        return panel
+        project_layout.addWidget(self._build_task_table(), 1)
+        self._main_stack.addWidget(project_panel)
+
+        outer_layout.addWidget(self._main_stack)
+        return outer
+
+    def _build_dashboard(self) -> QWidget:
+        widget = QFrame()
+        widget.setObjectName("Panel")
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(32, 28, 32, 28)
+        layout.setSpacing(20)
+
+        title = QLabel("Welcome to ATS Job Tracker")
+        title.setObjectName("ProjectTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        subtitle = QLabel("Select a project from the sidebar, or create a new one to get started.")
+        subtitle.setObjectName("hint")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
+
+        cards_row = QHBoxLayout()
+        cards_row.setSpacing(12)
+        self._dash_projects_card = StatCard("Projects", "—")
+        self._dash_due_week_card = StatCard("Due This Week", "—")
+        self._dash_overdue_card = StatCard("Overdue", "—")
+        self._dash_tasks_card = StatCard("Total Tasks", "—")
+        for card in [
+            self._dash_projects_card,
+            self._dash_due_week_card,
+            self._dash_overdue_card,
+            self._dash_tasks_card,
+        ]:
+            cards_row.addWidget(card)
+        layout.addLayout(cards_row)
+
+        lists_row = QHBoxLayout()
+        lists_row.setSpacing(16)
+
+        def _make_list_table(headers: list[str], stretch_col: int) -> PhoenixTable:
+            tbl = PhoenixTable(0, len(headers))
+            tbl.setHorizontalHeaderLabels(headers)
+            tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+            tbl.horizontalHeader().setSectionResizeMode(stretch_col, QHeaderView.ResizeMode.Stretch)
+            tbl.verticalHeader().setVisible(False)
+            tbl.setAlternatingRowColors(True)
+            return tbl
+
+        cv_col = QVBoxLayout()
+        cv_col.setSpacing(4)
+        cv_label = QLabel("Top 5 by Contract Value")
+        cv_label.setObjectName("SectionTitle")
+        cv_col.addWidget(cv_label)
+        self._dash_contract_table = _make_list_table(["Job #", "Job Name", "Contract Value"], 1)
+        self._dash_contract_table.setColumnWidth(0, 80)
+        self._dash_contract_table.setColumnWidth(2, 110)
+        cv_col.addWidget(self._dash_contract_table)
+        lists_row.addLayout(cv_col, 1)
+
+        new_col = QVBoxLayout()
+        new_col.setSpacing(4)
+        new_label = QLabel("5 Most Recently Added")
+        new_label.setObjectName("SectionTitle")
+        new_col.addWidget(new_label)
+        self._dash_newest_table = _make_list_table(["Job #", "Job Name", "Added"], 1)
+        self._dash_newest_table.setColumnWidth(0, 80)
+        self._dash_newest_table.setColumnWidth(2, 90)
+        new_col.addWidget(self._dash_newest_table)
+        lists_row.addLayout(new_col, 1)
+
+        layout.addLayout(lists_row)
+
+        activity_label = QLabel("Recent Activity")
+        activity_label.setObjectName("SectionTitle")
+        layout.addWidget(activity_label)
+
+        self._dash_activity_table = PhoenixTable(0, 5)
+        self._dash_activity_table.setHorizontalHeaderLabels(
+            ["Timestamp", "User", "Action", "Project", "Item"]
+        )
+        self._dash_activity_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._dash_activity_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._dash_activity_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
+        self._dash_activity_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch
+        )
+        self._dash_activity_table.setColumnWidth(0, 155)
+        self._dash_activity_table.setColumnWidth(1, 90)
+        self._dash_activity_table.setColumnWidth(2, 80)
+        self._dash_activity_table.verticalHeader().setVisible(False)
+        self._dash_activity_table.setAlternatingRowColors(True)
+        layout.addWidget(self._dash_activity_table, 1)
+
+        return widget
+
+    def _refresh_dashboard(self) -> None:
+        if not hasattr(self, "_dash_projects_card"):
+            return
+        _ACTION_COLORS = {
+            "created": "#4caf50", "completed": "#2196f3", "updated": "#fb923c",
+            "deleted": "#ef5350", "uncompleted": "#9e9e9e",
+        }
+        try:
+            stats = self.backend.get_dashboard_stats()
+        except (OSError, ValueError, KeyError):
+            return
+        self._dash_projects_card.set_value(str(stats["project_count"]))
+        self._dash_due_week_card.set_value(str(stats["due_this_week_count"]))
+        self._dash_overdue_card.set_value(str(stats["overdue_count"]))
+        self._dash_tasks_card.set_value(str(stats["total_tasks"]))
+
+        self._dash_contract_table.setRowCount(0)
+        for row, proj in enumerate(stats["top_contract"]):
+            self._dash_contract_table.insertRow(row)
+            try:
+                cv_display = f"${float(proj['contract_value']):,.0f}"
+            except (TypeError, ValueError):
+                cv_display = proj["contract_value"] or "—"
+            for col, val in enumerate([proj["job_number"] or "—", proj["job_name"], cv_display]):
+                self._dash_contract_table.setItem(row, col, QTableWidgetItem(str(val)))
+
+        self._dash_newest_table.setRowCount(0)
+        for row, proj in enumerate(stats["top_newest"]):
+            self._dash_newest_table.insertRow(row)
+            added = (proj["created_at"] or "")[:10]
+            for col, val in enumerate([proj["job_number"] or "—", proj["job_name"], added]):
+                self._dash_newest_table.setItem(row, col, QTableWidgetItem(str(val)))
+
+        self._dash_activity_table.setRowCount(0)
+        for row, act in enumerate(stats["recent_activity"]):
+            self._dash_activity_table.insertRow(row)
+            color = QColor(_ACTION_COLORS.get(act["action"], "#888888"))
+            entity_label = f"[{act['entity_type'].title()}] {act['entity_name']}"
+            for col, val in enumerate(
+                [act["timestamp"], act["user"], act["action"], act["project_name"], entity_label]
+            ):
+                item = QTableWidgetItem(str(val))
+                if col == 2:
+                    item.setForeground(color)
+                self._dash_activity_table.setItem(row, col, item)
 
     def _build_project_header(self) -> QWidget:
         wrapper = QFrame()
@@ -2577,6 +2907,8 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; } QScrollArea > QWidget > QWidget { background: transparent; }")
+        inner.setStyleSheet("QWidget { background: transparent; }")
 
         close_btn = TertiaryButton("Close")
         close_btn.clicked.connect(dlg.accept)
@@ -3262,6 +3594,47 @@ class MainWindow(QMainWindow):
         enter_shortcut.triggered.connect(self._edit_selected_task)
         self.addAction(enter_shortcut)
 
+        new_project_sc = QAction("New project", self)
+        new_project_sc.setShortcut(QKeySequence("Ctrl+N"))
+        new_project_sc.triggered.connect(self.create_project)
+        self.addAction(new_project_sc)
+
+        new_task_sc = QAction("New task", self)
+        new_task_sc.setShortcut(QKeySequence("Ctrl+T"))
+        new_task_sc.triggered.connect(self.add_task)
+        self.addAction(new_task_sc)
+
+        focus_search_sc = QAction("Focus project search", self)
+        focus_search_sc.setShortcut(QKeySequence("Ctrl+F"))
+        focus_search_sc.triggered.connect(lambda: self.search_edit.setFocus())
+        self.addAction(focus_search_sc)
+
+        focus_task_search_sc = QAction("Focus task search", self)
+        focus_task_search_sc.setShortcut(QKeySequence("Ctrl+Shift+F"))
+        focus_task_search_sc.triggered.connect(lambda: self.task_search_edit.setFocus())
+        self.addAction(focus_task_search_sc)
+
+        export_sc = QAction("Export to Excel", self)
+        export_sc.setShortcut(QKeySequence("Ctrl+E"))
+        export_sc.triggered.connect(self.export_excel)
+        self.addAction(export_sc)
+
+        bulk_export_sc = QAction("Bulk export", self)
+        bulk_export_sc.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        bulk_export_sc.triggered.connect(self._bulk_export_excel)
+        self.addAction(bulk_export_sc)
+
+        escape_sc = QAction("Clear search", self)
+        escape_sc.setShortcut(QKeySequence(Qt.Key.Key_Escape))
+        escape_sc.triggered.connect(self._on_escape)
+        self.addAction(escape_sc)
+
+    def _on_escape(self) -> None:
+        if hasattr(self, "task_search_edit") and self.task_search_edit.text():
+            self.task_search_edit.clear()
+        elif hasattr(self, "search_edit") and self.search_edit.text():
+            self.search_edit.clear()
+
     def _selected_task_id(self) -> Optional[int]:
         row = self.task_table.currentRow()
         if row < 0:
@@ -3406,6 +3779,9 @@ class MainWindow(QMainWindow):
             self.clear_project_display()
             return
 
+        if hasattr(self, "_main_stack"):
+            self._main_stack.setCurrentIndex(1)
+
         self.project_title.setText(project.job_name)
         subtitle = f"{project.job_number}"
         if project.updated_at:
@@ -3433,7 +3809,20 @@ class MainWindow(QMainWindow):
         self._refresh_stats_only()
         self.populate_tasks()
 
+    def _show_home(self) -> None:
+        """Deselect the current project and show the dashboard."""
+        self.project_list.blockSignals(True)
+        self.project_list.clearSelection()
+        self.project_list.blockSignals(False)
+        self.current_project_id = None
+        self.export_menu_action.setEnabled(False)
+        self.export_excel_action.setEnabled(False)
+        self.clear_project_display()
+
     def clear_project_display(self) -> None:
+        if hasattr(self, "_main_stack"):
+            self._refresh_dashboard()
+            self._main_stack.setCurrentIndex(0)
         self.project_title.setText("No project selected")
         self.project_subtitle.setText("Create a project or import the Phoenix workbook to begin.")
         for value_widget in [
@@ -3592,11 +3981,30 @@ class MainWindow(QMainWindow):
                 edit_action.triggered.connect(lambda: self.edit_task(task_id))
                 menu.addAction(edit_action)
 
+                notes_action = QAction("Notes History", self)
+                notes_action.triggered.connect(lambda: self._open_task_notes(task_id))
+                menu.addAction(notes_action)
+
                 delete_action = QAction("Delete Task", self)
                 delete_action.triggered.connect(lambda: self.delete_task(task_id))
                 menu.addAction(delete_action)
 
         menu.exec(self.task_table.viewport().mapToGlobal(pos))
+
+    def _open_task_notes(self, task_id: int) -> None:
+        task = next((t for t in self.current_tasks if t.id == task_id), None)
+        if task is None:
+            return
+        dlg = TaskNotesHistoryDialog(
+            task=task,
+            backend=self.backend,
+            current_user=self._current_user,
+            is_admin=self._current_user_is_admin(),
+            parent=self,
+        )
+        dlg.exec()
+        if dlg.was_modified:
+            self.load_current_project()
 
     @staticmethod
     def _centered_widget(widget: QWidget) -> QWidget:
@@ -3916,12 +4324,16 @@ class MainWindow(QMainWindow):
         task = next((item for item in self.current_tasks if item.id == task_id), None)
         if not task:
             return
+        old_notes = (task.notes or "").strip()
         dialog = TaskDialog(self, task)
         if dialog.exec() != int(QDialog.DialogCode.Accepted):
             return
         data = dialog.get_data()
         try:
             self.backend.update_task(task_id, **data)
+            new_notes = (data.get("notes") or "").strip()
+            if new_notes and new_notes != old_notes:
+                self.backend.add_task_note(task_id, new_notes)
         except Exception as exc:
             QMessageBox.critical(self, "Unable to update task", str(exc))
             return

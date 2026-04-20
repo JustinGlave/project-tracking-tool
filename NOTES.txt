@@ -1,0 +1,22 @@
+On my machine
+C:\Users\justing\ATS\Phoenix - Documents\Phoenix Project Tracker
+
+
+One the Phoenix Group
+C:\Users\justing\AppData\Roaming\ATS Inc\Project Tracking Tool
+
+---
+
+v1.3.0 — 2026-04-19
+
+- Home Dashboard: landing screen shown when no project is selected; displays stat cards
+  (Projects, Due This Week, Overdue, Total Tasks), top-5 projects by contract value,
+  5 most recently added projects, and a live recent-activity feed (last 20 actions).
+- Task Notes History: each task now has a timestamped note thread. Right-click any task
+  and choose "Notes History" to view or add entries. Editing a task's Notes field also
+  auto-appends the new text to the history thread. New TaskNoteRecord dataclass and
+  backend methods (add_task_note, list_task_notes, delete_task_note, get_dashboard_stats).
+- Keyboard shortcuts: Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search),
+  Ctrl+Shift+F (task search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear search).
+- UI fix: scroll areas in the financials dialog and version history dialog now render with
+  a transparent background, matching the dark navy theme correctly.

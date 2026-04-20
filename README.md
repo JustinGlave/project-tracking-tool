@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.2.0**
+**Current Version: v1.3.0**
 
 ---
 
@@ -21,6 +21,9 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
 - **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
 - **Financials Dashboard** — view financial data across all projects in one window, with separate tabs for active jobs, labor hours & cost, and warranty/archived jobs; sortable columns, live search, and totals row
+- **Home Dashboard** — landing screen shows project count, overdue tasks, tasks due this week, total tasks, top-5 projects by contract value, 5 most recently added projects, and a live recent-activity feed
+- **Task Notes History** — each task carries a timestamped note thread; view and add entries from the right-click context menu ("Notes History")
+- **Keyboard shortcuts** — Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search), Ctrl+Shift+F (task search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear active search)
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
 - Sort the project list by Last Updated, Name, or Job Number — ascending or descending
@@ -69,17 +72,50 @@ If you selected the wrong template when creating a job, you can reset it:
 
 > **Note:** This replaces all tasks. Any completed tasks or custom tasks will be lost.
 
+### Home Dashboard
+
+When no project is selected the main panel shows the Home Dashboard:
+
+- **Stat cards** — Projects, Due This Week, Overdue, Total Tasks
+- **Top 5 by Contract Value** and **5 Most Recently Added** project tables
+- **Recent Activity** feed showing the last 20 actions across all projects
+
+Click any project in the sidebar to open it; click an empty area of the sidebar or press **Escape** to return to the dashboard.
+
 ### Adding and Managing Tasks
 
 - Click **Add Task** to add a custom task
 - Check the **Done** checkbox on any row to mark a task complete
-- **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**
+- **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**, **Notes History**
 - Set a **Due Date** on any task — overdue incomplete tasks highlight red automatically
 - **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
 - Filter by phase using the **All phases** dropdown, or search by keyword in the **Filter tasks** box
 - Use **✓ All** / **✗ All** to bulk complete or uncomplete all currently visible tasks (confirmation required)
 - Toggle **Compact** to shrink row height and hide the Notes column for a denser view
+
+### Task Notes History
+
+Each task maintains a timestamped note thread separate from the single inline Notes field:
+
+1. **Right-click** any task row and choose **Notes History**
+2. The dialog shows all previous notes in chronological order
+3. Type in the input box and click **Add Note** to append a new entry — every entry is stamped with the date, time, and your username
+4. When you edit a task and change the Notes field, the new text is automatically appended to the history thread as well
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| **Ctrl+N** | New project |
+| **Ctrl+T** | New task |
+| **Ctrl+F** | Focus project search |
+| **Ctrl+Shift+F** | Focus task search |
+| **Ctrl+E** | Export to Excel (current project) |
+| **Ctrl+Shift+E** | Bulk export to Excel |
+| **Escape** | Clear the active search box |
+| **Delete** | Delete selected task |
+| **Enter / Return** | Edit selected task |
 
 ### Pinning a Project
 

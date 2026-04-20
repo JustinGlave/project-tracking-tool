@@ -72,6 +72,15 @@ class ActivityRecord:
 
 
 @dataclass(slots=True)
+class TaskNoteRecord:
+    id: Optional[int] = None
+    task_id: Optional[int] = None
+    timestamp: str = ""
+    user: str = ""
+    content: str = ""
+
+
+@dataclass(slots=True)
 class NoteRecord:
     id: Optional[int] = None
     project_id: Optional[int] = None
@@ -214,24 +223,28 @@ class ProjectTrackerBackend:
                 data["activity_log"] = []; changed = True
             if "next_activity_id" not in data:
                 data["next_activity_id"] = 1; changed = True
+            if "task_notes" not in data:
+                data["task_notes"] = []; changed = True
+            if "next_task_note_id" not in data:
+                data["next_task_note_id"] = 1; changed = True
             if changed:
                 self._save_data(data)
             return
 
         self._save_data({
             "projects": [], "tasks": [], "notes": [], "change_orders": [],
-            "activity_log": [],
+            "activity_log": [], "task_notes": [],
             "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
-            "next_co_id": 1, "next_activity_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
         })
 
     def _load_data(self) -> dict[str, Any]:
         if not self.db_path.exists():
             return {
                 "projects": [], "tasks": [], "notes": [], "change_orders": [],
-                "activity_log": [],
+                "activity_log": [], "task_notes": [],
                 "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
-                "next_co_id": 1, "next_activity_id": 1,
+                "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
             }
         return json.loads(self.db_path.read_text(encoding="utf-8"))
 
@@ -1574,6 +1587,129 @@ class ProjectTrackerBackend:
             if int(a["id"]) != activity_id
         ]
         self._save_data(data)
+
+    def add_task_note(self, task_id: int, content: str) -> int:
+        content = content.strip()
+        if not content:
+            raise ValueError("Note content cannot be empty.")
+        data = self._load_data()
+        new_id = int(data.get("next_task_note_id", 1))
+        data.setdefault("task_notes", []).append({
+            "id": new_id,
+            "task_id": task_id,
+            "timestamp": self._now_iso(),
+            "user": self.current_user,
+            "content": content,
+        })
+        data["next_task_note_id"] = new_id + 1
+        self._save_data(data)
+        return new_id
+
+    def list_task_notes(self, task_id: int) -> list[TaskNoteRecord]:
+        data = self._load_data()
+        entries = [e for e in data.get("task_notes", []) if int(e["task_id"]) == task_id]
+        entries.sort(key=lambda e: e.get("timestamp", ""))
+        return [
+            TaskNoteRecord(
+                id=e["id"],
+                task_id=e["task_id"],
+                timestamp=e["timestamp"],
+                user=e["user"],
+                content=e["content"],
+            )
+            for e in entries
+        ]
+
+    def list_task_notes_for_project(self, project_id: int) -> dict[int, int]:
+        """Returns {task_id: note_count} for all tasks in a project."""
+        data = self._load_data()
+        task_ids = {
+            int(t["id"]) for t in data.get("tasks", [])
+            if int(t.get("project_id", 0)) == project_id
+        }
+        counts: dict[int, int] = {}
+        for e in data.get("task_notes", []):
+            tid = int(e["task_id"])
+            if tid in task_ids:
+                counts[tid] = counts.get(tid, 0) + 1
+        return counts
+
+    def delete_task_note(self, note_id: int) -> None:
+        data = self._load_data()
+        data["task_notes"] = [
+            n for n in data.get("task_notes", []) if int(n["id"]) != note_id
+        ]
+        self._save_data(data)
+
+    def get_dashboard_stats(self) -> dict:
+        """Summary statistics for the home screen dashboard."""
+        from datetime import timedelta
+        data = self._load_data()
+        projects = data.get("projects", [])
+        tasks = data.get("tasks", [])
+        today = date.today().isoformat()
+        week_str = (date.today() + timedelta(days=7)).isoformat()
+
+        active_projects = [p for p in projects if not p.get("is_test", False)]
+        incomplete_tasks = [t for t in tasks if not t.get("is_complete", False)]
+        overdue = [t for t in incomplete_tasks if t.get("due_date") and t["due_date"] < today]
+        due_this_week = [
+            t for t in incomplete_tasks
+            if t.get("due_date") and today <= t["due_date"] <= week_str
+        ]
+
+        activity = data.get("activity_log", [])
+        activity_sorted = sorted(activity, key=lambda a: a.get("timestamp", ""), reverse=True)
+        proj_names = {int(p["id"]): p.get("job_name", "Unknown") for p in projects}
+        recent_activity = [
+            {
+                "timestamp": a.get("timestamp", ""),
+                "user": a.get("user", ""),
+                "action": a.get("action", ""),
+                "entity_type": a.get("entity_type", ""),
+                "entity_name": a.get("entity_name", ""),
+                "project_name": proj_names.get(int(a.get("project_id", 0)), "Unknown"),
+                "details": a.get("details", ""),
+            }
+            for a in activity_sorted[:20]
+        ]
+
+        def _proj_row(p: dict) -> dict:
+            return {
+                "id": int(p["id"]),
+                "job_name": p.get("job_name", ""),
+                "job_number": p.get("job_number", ""),
+                "contract_value": p.get("contract_value", ""),
+                "created_at": p.get("created_at", ""),
+            }
+
+        sortable_cv = []
+        for p in active_projects:
+            try:
+                cv = float(p.get("contract_value") or 0)
+            except (TypeError, ValueError):
+                cv = 0.0
+            if cv > 0:
+                sortable_cv.append((cv, p))
+        sortable_cv.sort(key=lambda x: x[0], reverse=True)
+        top_contract = [_proj_row(p) for _, p in sortable_cv[:5]]
+
+        newest = sorted(
+            active_projects,
+            key=lambda p: p.get("created_at") or "",
+            reverse=True,
+        )[:5]
+        top_newest = [_proj_row(p) for p in newest]
+
+        return {
+            "project_count": len(active_projects),
+            "overdue_count": len(overdue),
+            "due_this_week_count": len(due_this_week),
+            "total_tasks": len(tasks),
+            "recent_activity": recent_activity,
+            "top_contract": top_contract,
+            "top_newest": top_newest,
+        }
 
     # ---------- internal helpers ----------
 
