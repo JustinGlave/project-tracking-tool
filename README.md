@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.3.0**
+**Current Version: v1.4.0**
 
 ---
 
@@ -23,6 +23,7 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Financials Dashboard** — view financial data across all projects in one window, with separate tabs for active jobs, labor hours & cost, and warranty/archived jobs; sortable columns, live search, and totals row
 - **Home Dashboard** — landing screen shows project count, overdue tasks, tasks due this week, total tasks, top-5 projects by contract value, 5 most recently added projects, and a live recent-activity feed
 - **Task Notes History** — each task carries a timestamped note thread; view and add entries from the right-click context menu ("Notes History")
+- **RSS Feed Attachments** — attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from the Notes window; view data in an interactive table with sortable columns; admins can add rows, edit rows, delete rows, and remove feeds; non-admins can submit proposed changes that are logged to the activity log
 - **Keyboard shortcuts** — Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search), Ctrl+Shift+F (task search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear active search)
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
@@ -127,6 +128,25 @@ Click **📌 Pin** (bottom of the sidebar) to pin the selected project to the to
 2. Click **+ Add Note** to create a new note with a date and content
 3. Notes can be marked **Open** or **Closed** and include a closeout comment
 4. Double-click any note row to edit it
+
+### RSS Feed Attachments
+
+Attach CSV or Excel data files to a job and view them directly inside the app:
+
+1. With a job selected, click **📝 Notes** to open the Notes window
+2. Click **Attach RSS** to browse for a CSV (`.csv`) or Excel (`.xlsx` / `.xlsm`) file
+3. A preview of the file's contents is shown — give the table a name, then click **Confirm**
+4. If a feed already exists on the job, choose **Replace All** to overwrite or **Add New** to keep both
+5. Click **RSS** to open the feed viewer. If multiple feeds are attached, a picker lets you choose which one to open
+
+**In the RSS viewer (admins only):**
+- Click any column header to sort ascending; click again to reverse
+- Click **+ Add Row** or double-click any row to add or edit a row
+- Select one or more rows and click **Delete Row** to remove them (with confirmation)
+- Click **Delete RSS** to remove the entire feed from the job
+
+**In the RSS viewer (non-admins):**
+- Click **Propose Change** to describe a requested edit — the proposal is logged to the project's activity log for admin review
 
 ### Adding Change Orders
 

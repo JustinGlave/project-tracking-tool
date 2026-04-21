@@ -7,6 +7,26 @@ C:\Users\justing\AppData\Roaming\ATS Inc\Project Tracking Tool
 
 ---
 
+v1.4.0 — 2026-04-21
+
+- RSS Feed Attachments: attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from
+  the Notes window. Data is stored in the project JSON so it persists even if the original file
+  moves. New "Attach RSS" button opens a file picker, shows a preview with a table-name field,
+  and a Confirm button before saving. If feeds already exist, user is prompted to Replace All or
+  Add New. The "RSS" button opens a feed viewer; if multiple feeds exist, a picker lets the user
+  choose which to open.
+- RSS viewer — admin features: sortable columns (click header to toggle asc/desc), Add Row
+  (form dialog), double-click to edit a row, Delete Row (multi-select with confirmation),
+  Delete RSS (removes feed from job with confirmation). All edits persist immediately.
+- RSS viewer — non-admin feature: Propose Change button submits a description that is logged
+  to the project's activity log for admin review.
+- Bug fixes: resolved several PyCharm inspection warnings — QAbstractItemModel override
+  signatures updated to accept QPersistentModelIndex, key_fn type annotation in list_projects,
+  financials provider union type, unused variable, broad exception clause, and
+  StandardButtons constructor usage.
+- Performance: RSS table population skips resizeColumnsToContents for tables >500 rows to
+  prevent UI freeze on large files; openpyxl active-sheet None guard added.
+
 v1.3.0 — 2026-04-19
 
 - Home Dashboard: landing screen shown when no project is selected; displays stat cards

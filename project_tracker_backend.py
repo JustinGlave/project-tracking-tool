@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -43,6 +43,7 @@ class ProjectRecord:
     updated_at: Optional[str] = None
     created_by: str = ""
     updated_by: str = ""
+    rss_files: list = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -171,6 +172,17 @@ _PHOENIX_EXCLUDED: frozenset[str] = frozenset({
 PHOENIX_TASKS: tuple[dict[str, Any], ...] = tuple(
     t for t in DEFAULT_TASKS if t["task_name"] not in _PHOENIX_EXCLUDED
 )
+
+
+def _migrate_rss_files(project_dict: dict) -> list:
+    """Return rss_files list, migrating from legacy csv_file_path if needed."""
+    rss_files = project_dict.get("rss_files")
+    if isinstance(rss_files, list):
+        return rss_files
+    old_path = project_dict.get("csv_file_path", "")
+    if old_path:
+        return [{"name": "Imported", "path": old_path}]
+    return []
 
 
 class ProjectTrackerBackend:
@@ -323,6 +335,7 @@ class ProjectTrackerBackend:
             "div25_url": project.div25_url.strip(),
             "is_test": project.is_test,
             "pinned": project.pinned,
+            "rss_files": list(project.rss_files),
             "created_at": now,
             "updated_at": now,
             "created_by": self.current_user,
@@ -360,6 +373,7 @@ class ProjectTrackerBackend:
             "job_docs",
             "div25_url",
             "pinned",
+            "rss_files",
         }
         unknown_keys = set(changes) - allowed_fields
         if unknown_keys:
@@ -447,6 +461,7 @@ class ProjectTrackerBackend:
                 or search_value in str(item.get("sales_engineer", "")).casefold()
             ]
 
+        key_fn: Any
         if sort_by == "name":
             key_fn = lambda item: str(item.get("job_name", "")).casefold()
         elif sort_by == "job_number":
@@ -1559,6 +1574,11 @@ class ProjectTrackerBackend:
         })
         data["next_activity_id"] = new_id + 1
 
+    def log_rss_proposal(self, project_id: int, table_name: str, details: str) -> None:
+        data = self._load_data()
+        self._log_activity(data, project_id, "proposed", "rss", table_name, details)
+        self._save_data(data)
+
     def list_activity(self, project_id: int) -> list[ActivityRecord]:
         data = self._load_data()
         entries = [
@@ -1835,6 +1855,7 @@ class ProjectTrackerBackend:
             div25_url=project_dict.get("div25_url", ""),
             is_test=bool(project_dict.get("is_test", False)),
             pinned=bool(project_dict.get("pinned", False)),
+            rss_files=_migrate_rss_files(project_dict),
             created_at=project_dict["created_at"],
             updated_at=project_dict["updated_at"],
             created_by=project_dict.get("created_by", ""),

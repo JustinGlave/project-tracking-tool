@@ -425,6 +425,401 @@ class TaskDialog(QDialog):
         super().accept()
 
 
+def _read_rss_file(path: str) -> tuple[list[str], list[list[str]]]:
+    """Read a CSV or Excel file; return (headers, data_rows) as strings."""
+    ext = os.path.splitext(path)[1].lower()
+    rows: list[list[str]] = []
+    if ext in (".xlsx", ".xlsm"):
+        from openpyxl import load_workbook as _load_wb
+        wb = _load_wb(path, read_only=True, data_only=True)
+        ws = wb.active
+        if ws is not None:
+            rows = [[str(cell.value) if cell.value is not None else "" for cell in row]
+                    for row in ws.iter_rows()]
+        wb.close()
+    else:
+        import csv as _csv
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            rows = [list(row) for row in _csv.reader(fh)]
+    headers = rows[0] if rows else []
+    data_rows = rows[1:] if len(rows) > 1 else []
+    return headers, data_rows
+
+
+def _rss_table_widget(headers: list[str], data_rows: list[list[str]]) -> QTableWidget:
+    table = QTableWidget(len(data_rows), len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.verticalHeader().setVisible(False)
+    table.horizontalHeader().setStretchLastSection(True)
+    table.setAlternatingRowColors(True)
+    for r, row in enumerate(data_rows):
+        for c, cell in enumerate(row):
+            table.setItem(r, c, QTableWidgetItem(cell))
+    table.resizeColumnsToContents()
+    return table
+
+
+class RSSRowDialog(QDialog):
+    """Form to add or edit a single row in an RSS table."""
+
+    def __init__(self, headers: list[str], values: Optional[list[str]] = None,
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Row" if values else "Add Row")
+        self.setModal(True)
+        self.resize(440, max(160, 40 * len(headers) + 80))
+
+        form = QFormLayout()
+        self._edits: list[QLineEdit] = []
+        for i, header in enumerate(headers):
+            edit = QLineEdit(values[i] if values and i < len(values) else "")
+            self._edits.append(edit)
+            form.addRow(header + ":", edit)
+
+        btns = QDialogButtonBox()
+        btns.addButton(QDialogButtonBox.StandardButton.Ok)
+        btns.addButton(QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+
+        lay = QVBoxLayout(self)
+        lay.addLayout(form)
+        lay.addWidget(btns)
+
+    def get_row(self) -> list[str]:
+        return [e.text() for e in self._edits]
+
+
+class RSSProposeDialog(QDialog):
+    """Non-admin dialog to describe a proposed change to an RSS table."""
+
+    def __init__(self, table_name: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Propose Change — {table_name}")
+        self.setModal(True)
+        self.resize(460, 220)
+
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Describe your proposed change:"))
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("e.g. Remove row 3, update the value in column B to...")
+        lay.addWidget(self.text_edit, 1)
+
+        btns = QDialogButtonBox()
+        btns.addButton(QDialogButtonBox.StandardButton.Ok)
+        btns.addButton(QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Submit")
+        btns.accepted.connect(self._submit)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def _submit(self) -> None:
+        if not self.text_edit.toPlainText().strip():
+            QMessageBox.warning(self, "Empty", "Please describe the proposed change.")
+            return
+        self.accept()
+
+    def get_text(self) -> str:
+        return self.text_edit.toPlainText().strip()
+
+
+class RSSViewDialog(QDialog):
+    """Interactive RSS feed viewer — admins can edit rows/sort/delete; others can propose changes."""
+
+    def __init__(self, entry: dict, entry_idx: int, project_id: int, backend: Any,
+                 is_admin: bool = False, current_user: str = "",
+                 parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._entry_idx   = entry_idx
+        self._project_id  = project_id
+        self._backend     = backend
+        self._is_admin    = is_admin
+        self._current_user = current_user
+        self._table_name  = entry.get("name", "RSS Feed")
+
+        self.setWindowTitle(f"RSS — {self._table_name}")
+        self.resize(920, 560)
+        self.setMinimumSize(600, 360)
+        self.setModal(True)
+
+        # Load data: prefer stored rows, fall back to reading file
+        stored_headers = entry.get("headers")
+        stored_rows    = entry.get("rows")
+        if stored_headers is not None:
+            self._headers: list[str]       = [str(h) for h in stored_headers]
+            self._rows:    list[list[str]] = [[str(c) for c in r] for r in stored_rows or []]
+        else:
+            path = entry.get("path", "")
+            try:
+                self._headers, self._rows = _read_rss_file(path)
+            except Exception as exc:
+                self._headers, self._rows = [], []
+                QMessageBox.warning(self, "RSS", f"Could not read file:\n{exc}")
+
+        self._sort_col  = -1
+        self._sort_asc  = True
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        # --- Toolbar ---
+        tb = QHBoxLayout()
+        self._sort_lbl = QLabel("")
+        self._sort_lbl.setStyleSheet("color: gray; font-size: 11px;")
+        tb.addWidget(self._sort_lbl)
+        tb.addStretch()
+
+        if is_admin:
+            add_row_btn = PrimaryButton("+ Add Row")
+            add_row_btn.setFixedWidth(100)
+            add_row_btn.clicked.connect(self._add_row)
+            tb.addWidget(add_row_btn)
+
+            del_row_btn = SecondaryButton("Delete Row")
+            del_row_btn.setFixedWidth(100)
+            del_row_btn.clicked.connect(self._delete_rows)
+            tb.addWidget(del_row_btn)
+
+            del_rss_btn = SecondaryButton("Delete RSS")
+            del_rss_btn.setFixedWidth(100)
+            del_rss_btn.clicked.connect(self._delete_rss)
+            tb.addWidget(del_rss_btn)
+        else:
+            propose_btn = SecondaryButton("Propose Change")
+            propose_btn.setFixedWidth(130)
+            propose_btn.clicked.connect(self._propose_change)
+            tb.addWidget(propose_btn)
+
+        layout.addLayout(tb)
+
+        # --- Table ---
+        self.table = QTableWidget(0, max(len(self._headers), 1))
+        self.table.setHorizontalHeaderLabels(self._headers or ["(empty)"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().sectionClicked.connect(self._sort_by_column)
+        if is_admin:
+            self.table.doubleClicked.connect(self._edit_row)
+        layout.addWidget(self.table, 1)
+
+        # --- Close button ---
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = TertiaryButton("Close")
+        close_btn.setFixedWidth(90)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._refresh_table()
+
+    # ------------------------------------------------------------------ data
+    def _refresh_table(self) -> None:
+        self.table.clearContents()
+        self.table.setRowCount(len(self._rows))
+        col_count = len(self._headers)
+        for r, row in enumerate(self._rows):
+            for c in range(col_count):
+                cell = row[c] if c < len(row) else ""
+                self.table.setItem(r, c, QTableWidgetItem(cell))
+        if len(self._rows) <= 500:
+            self.table.resizeColumnsToContents()
+
+    def _save(self) -> None:
+        project = self._backend.get_project(self._project_id)
+        if project is None:
+            return
+        rss_files = list(project.rss_files)
+        if self._entry_idx >= len(rss_files):
+            return
+        rss_files[self._entry_idx] = {
+            **rss_files[self._entry_idx],
+            "headers": self._headers,
+            "rows": self._rows,
+        }
+        self._backend.update_project(self._project_id, rss_files=rss_files)
+
+    # --------------------------------------------------------------- sorting
+    def _sort_by_column(self, col: int) -> None:
+        if self._sort_col == col:
+            self._sort_asc = not self._sort_asc
+        else:
+            self._sort_col = col
+            self._sort_asc = True
+
+        def _key(row: list[str]) -> str:
+            val = row[col] if col < len(row) else ""
+            try:
+                return f"{float(val):030.10f}"
+            except ValueError:
+                return val.casefold()
+
+        self._rows.sort(key=_key, reverse=not self._sort_asc)
+        arrow = "▲" if self._sort_asc else "▼"
+        col_name = self._headers[col] if col < len(self._headers) else str(col)
+        self._sort_lbl.setText(f"Sorted by {col_name} {arrow}")
+        self._refresh_table()
+
+    # ------------------------------------------------------------ admin edits
+    def _add_row(self) -> None:
+        dlg = RSSRowDialog(self._headers, parent=self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self._rows.append(dlg.get_row())
+        self._refresh_table()
+        self._save()
+
+    def _edit_row(self) -> None:
+        row_idx = self.table.currentRow()
+        if row_idx < 0:
+            return
+        values = self._rows[row_idx] if row_idx < len(self._rows) else []
+        dlg = RSSRowDialog(self._headers, values, parent=self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self._rows[row_idx] = dlg.get_row()
+        self._refresh_table()
+        self._save()
+
+    def _delete_rows(self) -> None:
+        selected = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
+        if not selected:
+            return
+        count = len(selected)
+        ans = QMessageBox.question(
+            self, "Delete Rows",
+            f"Delete {count} selected row{'s' if count > 1 else ''}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        for i in selected:
+            if i < len(self._rows):
+                self._rows.pop(i)
+        self._refresh_table()
+        self._save()
+
+    def _delete_rss(self) -> None:
+        ans = QMessageBox.question(
+            self, "Delete RSS",
+            f'Permanently remove "{self._table_name}" from this job?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        project = self._backend.get_project(self._project_id)
+        if project:
+            rss_files = [f for i, f in enumerate(project.rss_files) if i != self._entry_idx]
+            self._backend.update_project(self._project_id, rss_files=rss_files)
+        self.accept()
+
+    # ------------------------------------------------------- non-admin propose
+    def _propose_change(self) -> None:
+        dlg = RSSProposeDialog(self._table_name, parent=self)
+        if dlg.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        self._backend.log_rss_proposal(self._project_id, self._table_name, dlg.get_text())
+        QMessageBox.information(
+            self, "Proposal Submitted",
+            "Your proposed change has been logged and will be reviewed by an admin."
+        )
+
+
+class RSSPreviewDialog(QDialog):
+    """Preview a file before attaching it; lets the user name the table."""
+
+    def __init__(self, file_path: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._file_path = file_path
+        default_name = os.path.splitext(os.path.basename(file_path))[0]
+        self.setWindowTitle(f"Preview — {os.path.basename(file_path)}")
+        self.resize(860, 560)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Table name:"))
+        self.name_edit = QLineEdit(default_name)
+        name_row.addWidget(self.name_edit, 1)
+        layout.addLayout(name_row)
+
+        try:
+            headers, data_rows = _read_rss_file(file_path)
+            error = None
+        except Exception as exc:
+            headers, data_rows, error = [], [], str(exc)
+
+        self._ok = False
+        if error:
+            layout.addWidget(QLabel(f"Could not read file:\n{error}"))
+        elif not headers:
+            layout.addWidget(QLabel("File is empty."))
+        else:
+            self._ok = True
+            preview_rows = data_rows[:20]
+            layout.addWidget(_rss_table_widget(headers, preview_rows), 1)
+            if len(data_rows) > 20:
+                layout.addWidget(QLabel(f"Showing first 20 of {len(data_rows)} rows."))
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        if self._ok:
+            confirm_btn = PrimaryButton("Confirm")
+            confirm_btn.setFixedWidth(100)
+            confirm_btn.clicked.connect(self.accept)
+            btn_row.addWidget(confirm_btn)
+        cancel_btn = TertiaryButton("Cancel")
+        cancel_btn.setFixedWidth(90)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def get_name(self) -> str:
+        name = self.name_edit.text().strip()
+        return name or os.path.splitext(os.path.basename(self._file_path))[0]
+
+
+class RSSSelectDialog(QDialog):
+    """Pick one of the job's attached RSS feeds to open."""
+
+    def __init__(self, rss_files: list, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Select RSS Feed")
+        self.setModal(True)
+        self.resize(380, 260)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Choose a table to open:"))
+
+        self.list_widget = QListWidget()
+        for entry in rss_files:
+            self.list_widget.addItem(entry.get("name", entry.get("path", "")))
+        self.list_widget.setCurrentRow(0)
+        self.list_widget.doubleClicked.connect(self.accept)
+        layout.addWidget(self.list_widget, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        open_btn = PrimaryButton("Open")
+        open_btn.setFixedWidth(90)
+        open_btn.clicked.connect(self.accept)
+        cancel_btn = TertiaryButton("Cancel")
+        cancel_btn.setFixedWidth(90)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(open_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+
 class NoteDialog(QDialog):
     """Add or edit a single note."""
 
@@ -482,11 +877,14 @@ class NotesWindow(QDialog):
 
     def __init__(self, project_id: int, project_name: str,
                  backend: Any, view_only: bool = False,
+                 is_admin: bool = False, current_user: str = "",
                  parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.project_id   = project_id
         self.backend      = backend
         self._view_only   = view_only
+        self._is_admin    = is_admin
+        self._current_user = current_user
         self.setWindowTitle(f"Job Progress Notes — {project_name}")
         self.resize(1000, 560)
         self.setMinimumSize(700, 400)
@@ -500,6 +898,15 @@ class NotesWindow(QDialog):
         title_lbl.setObjectName("SectionTitle")
         toolbar.addWidget(title_lbl)
         toolbar.addStretch()
+        if not view_only:
+            attach_btn = TertiaryButton("Attach RSS")
+            attach_btn.setFixedWidth(120)
+            attach_btn.clicked.connect(self._attach_rss)
+            toolbar.addWidget(attach_btn)
+        rss_btn = TertiaryButton("RSS")
+        rss_btn.setFixedWidth(60)
+        rss_btn.clicked.connect(self._show_rss)
+        toolbar.addWidget(rss_btn)
         if not view_only:
             add_btn = PrimaryButton("+ Add Note")
             add_btn.setFixedWidth(110)
@@ -614,6 +1021,74 @@ class NotesWindow(QDialog):
             return
         self.backend.update_note(note_id, **dlg.get_data())
         self._refresh()
+
+    def _attach_rss(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Attach File", "",
+            "Data Files (*.csv *.xlsx *.xlsm);;CSV Files (*.csv);;Excel Files (*.xlsx *.xlsm)"
+        )
+        if not path:
+            return
+
+        preview = RSSPreviewDialog(path, self)
+        if preview.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        table_name = preview.get_name()
+
+        project = self.backend.get_project(self.project_id)
+        existing = list(project.rss_files) if project else []
+
+        # Read and store data in JSON so edits work without the original file
+        try:
+            headers, rows = _read_rss_file(path)
+        except (OSError, ValueError, KeyError):
+            headers, rows = [], []
+        new_entry: dict = {"name": table_name, "path": path, "headers": headers, "rows": rows}
+
+        if existing:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Attach File")
+            msg.setText("This job already has RSS feeds attached.\nWhat would you like to do?")
+            overwrite_btn = msg.addButton("Replace All", QMessageBox.ButtonRole.DestructiveRole)
+            msg.addButton("Add New",     QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn    = msg.addButton("Cancel",      QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is cancel_btn:
+                return
+            new_files: list = [new_entry] if clicked is overwrite_btn else existing + [new_entry]
+        else:
+            new_files = [new_entry]
+
+        self.backend.update_project(self.project_id, rss_files=new_files)
+        QMessageBox.information(self, "RSS", f'"{table_name}" attached successfully.')
+
+    def _show_rss(self) -> None:
+        project = self.backend.get_project(self.project_id)
+        rss_files = list(project.rss_files) if project else []
+        if not rss_files:
+            QMessageBox.information(
+                self, "RSS",
+                "No files attached to this job.\nUse 'Attach RSS' to add one."
+            )
+            return
+
+        if len(rss_files) == 1:
+            entry = rss_files[0]
+        else:
+            dlg = RSSSelectDialog(rss_files, self)
+            if dlg.exec() != int(QDialog.DialogCode.Accepted):
+                return
+            idx = dlg.list_widget.currentRow()
+            entry = rss_files[idx]
+
+        entry_idx = rss_files.index(entry)
+        RSSViewDialog(
+            entry, entry_idx, self.project_id, self.backend,
+            is_admin=self._is_admin, current_user=self._current_user,
+            parent=self,
+        ).exec()
 
     def _delete_selected(self) -> None:
         if self._view_only:
@@ -2117,7 +2592,7 @@ class MainWindow(QMainWindow):
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.backend.current_user = current_user
         self.current_project_id: Optional[int] = None
-        self._financials_provider: Optional[ExcelFinancialsProvider] = self._build_financials_provider()
+        self._financials_provider: Optional[ExcelFinancialsProvider | SnapshotFinancialsProvider] = self._build_financials_provider()
         self.current_tasks: list[TaskRecord] = []
 
         self._populating = False
@@ -2765,7 +3240,10 @@ class MainWindow(QMainWindow):
         project = self.backend.get_project(self.current_project_id)
         name = project.job_name if project else "Project"
         dlg = NotesWindow(self.current_project_id, name, self.backend,
-                          view_only=self._current_user_view_only(), parent=self)
+                          view_only=self._current_user_view_only(),
+                          is_admin=self._current_user_is_admin(),
+                          current_user=self._current_user,
+                          parent=self)
         dlg.exec()
 
     def _open_change_orders(self) -> None:

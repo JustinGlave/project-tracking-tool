@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from PySide6.QtCore import Qt, QSortFilterProxyModel, QAbstractTableModel, QModelIndex
+from PySide6.QtCore import Qt, QSortFilterProxyModel, QAbstractTableModel, QModelIndex, QPersistentModelIndex
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -67,10 +67,10 @@ class _FinModel(QAbstractTableModel):
         dm = (sum(s.differential_margin for s in self._rows) / n) if n else 0.0
         return ["", f"{n} projects", "", "TOTALS / AVG", cv, bd, ac, bm, am, dm]
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return len(self._rows) + 1
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return len(_FIN_COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -78,7 +78,7 @@ class _FinModel(QAbstractTableModel):
             return _FIN_COLUMNS[section][0]
         return None
 
-    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+    def data(self, index: QModelIndex | QPersistentModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
         row, col = index.row(), index.column()
@@ -164,10 +164,10 @@ class _LaborModel(QAbstractTableModel):
         bud  = sum(_total_labor_budget(s) for s in self._rows)
         return ["", f"{n} projects", "", "TOTALS", pmh, tech, tot, pmc, tec, tlc, rem, bud]
 
-    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def rowCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return len(self._rows) + 1
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+    def columnCount(self, parent: QModelIndex | QPersistentModelIndex = QModelIndex()) -> int:
         return len(_LAB_COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -185,7 +185,7 @@ class _LaborModel(QAbstractTableModel):
             return _total_labor_budget(s)
         return getattr(s, _LAB_COLUMNS[col][1])
 
-    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+    def data(self, index: QModelIndex | QPersistentModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
         row, col = index.row(), index.column()
