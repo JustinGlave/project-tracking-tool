@@ -3048,16 +3048,26 @@ class MainWindow(QMainWindow):
         self.webpro_id_btn.setEnabled(False)
         self.webpro_id_btn.clicked.connect(self._edit_webpro_id)
 
-        btn_pair_col = QVBoxLayout()
-        btn_pair_col.setSpacing(0)
-        btn_pair_col.setContentsMargins(0, 0, 0, 0)
-        btn_pair_row = QHBoxLayout()
-        btn_pair_row.setSpacing(4)
-        btn_pair_row.setContentsMargins(0, 0, 0, 0)
-        btn_pair_row.addWidget(self.webpro_id_btn)
-        btn_pair_row.addWidget(self.div25_btn)
-        btn_pair_col.addLayout(btn_pair_row)
-        left_layout.addLayout(btn_pair_col, 0)
+        # WebPro ID column (with caption) + Div25 column side by side
+        webpro_col = QVBoxLayout()
+        webpro_col.setSpacing(0)
+        webpro_col.setContentsMargins(0, 0, 0, 0)
+        webpro_cap = QLabel("WebPro ID")
+        webpro_cap.setObjectName("MetaCaption")
+        webpro_col.addWidget(webpro_cap)
+        webpro_col.addWidget(self.webpro_id_btn)
+
+        div25_col = QVBoxLayout()
+        div25_col.setSpacing(0)
+        div25_col.setContentsMargins(0, 0, 0, 0)
+        div25_col.addWidget(self.div25_btn)
+
+        btn_pair = QHBoxLayout()
+        btn_pair.setSpacing(4)
+        btn_pair.setContentsMargins(0, 0, 0, 0)
+        btn_pair.addLayout(webpro_col)
+        btn_pair.addLayout(div25_col)
+        left_layout.addLayout(btn_pair, 0)
 
         row.addWidget(left_widget, 1)
 

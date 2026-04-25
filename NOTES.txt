@@ -7,6 +7,12 @@ C:\Users\justing\AppData\Roaming\ATS Inc\Project Tracking Tool
 
 ---
 
+v1.5.1 — 2026-04-24
+
+- Bug fix: WebPro ID button displayed as red in dev/test run due to missing style in
+  phoenix_style.qss. Styles now present in both the QSS file and the embedded fallback.
+- Bug fix: WebPro ID caption label was missing from the header layout.
+
 v1.5.0 — 2026-04-24
 
 - WebPro ID field added to all projects. Displayed in the project header next to the Div25

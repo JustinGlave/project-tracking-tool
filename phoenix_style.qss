@@ -759,3 +759,6 @@ QLabel#CheckoutTag {
 QLabel#errorLabel { color: #ef4444; }
 QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }
 QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
+QPushButton#WebProIdBtn { background: transparent; border: none; border-bottom: 1px dashed #4b5563; border-radius: 0px; color: #d1d5db; font-size: 9pt; text-align: left; padding: 1px 2px; }
+QPushButton#WebProIdBtn:hover { color: #ffffff; border-bottom: 1px solid #60a5fa; }
+QPushButton#WebProIdBtn:disabled { color: #4b5563; border-bottom: 1px dashed #374151; }

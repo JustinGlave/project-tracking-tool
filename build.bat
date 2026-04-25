@@ -29,10 +29,9 @@ pyinstaller ^
     --hidden-import=openpyxl ^
     --hidden-import=openpyxl.cell._writer ^
     --collect-submodules=openpyxl ^
-    --collect-all=PySide6 ^
-    --hidden-import=xml.etree.ElementTree ^
-    --hidden-import=xml.etree.cElementTree ^
-    --collect-submodules=xml ^
+    --collect-submodules=PySide6.QtCore ^
+    --collect-submodules=PySide6.QtGui ^
+    --collect-submodules=PySide6.QtWidgets ^
     --hidden-import=pyxlsb ^
     project_tracker_gui.py
 
