@@ -7,6 +7,13 @@ C:\Users\justing\AppData\Roaming\ATS Inc\Project Tracking Tool
 
 ---
 
+v1.5.0 — 2026-04-24
+
+- WebPro ID field added to all projects. Displayed in the project header next to the Div25
+  button (same dimensions). Click the button to edit the ID inline without opening the full
+  project dialog. Also editable via the standard Edit Project form (under Job number).
+  Field persists in the project JSON and is backwards-compatible with existing data.
+
 v1.4.0 — 2026-04-21
 
 - RSS Feed Attachments: attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from

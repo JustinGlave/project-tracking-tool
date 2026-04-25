@@ -207,6 +207,7 @@ class ProjectDialog(QDialog):
         self.contract_value_edit    = QLineEdit(project.contract_value if project else "")
         self.job_docs_edit          = QLineEdit(project.job_docs if project else "")
         self.div25_url_edit         = QLineEdit(project.div25_url if project else "")
+        self.webpro_id_edit         = QLineEdit(project.webpro_id if project else "")
 
         self.template_combo = QComboBox()
         self.template_combo.addItem("Standard", "standard")
@@ -219,6 +220,7 @@ class ProjectDialog(QDialog):
             form_layout.addRow("Task Template",       self.template_combo)
         form_layout.addRow("Job name *",          self.job_name_edit)
         form_layout.addRow("Job number *",        self.job_number_edit)
+        form_layout.addRow("WebPro ID",           self.webpro_id_edit)
         form_layout.addRow("Project manager",     self.pm_edit)
         form_layout.addRow("Sales engineer",      self.sales_edit)
         form_layout.addRow("Target completion",   completion_row)
@@ -270,6 +272,7 @@ class ProjectDialog(QDialog):
             contract_value=self.contract_value_edit.text().strip(),
             job_docs=self.job_docs_edit.text().strip(),
             div25_url=self.div25_url_edit.text().strip(),
+            webpro_id=self.webpro_id_edit.text().strip(),
         )
 
     def get_template(self) -> str:
@@ -3016,35 +3019,45 @@ class MainWindow(QMainWindow):
         self.div25_btn.setEnabled(False)
         self.div25_btn.clicked.connect(self._open_div25)
 
-        meta_pairs: list[tuple[str, ElidingLabel]] = [
-            ("Job #",     self.job_number_value),
-            ("PM",        self.pm_value),
-            ("SE",        self.sales_value),
-            ("Due",       self.completion_value),
-            ("Booked",    self.booked_value),
-            ("Contract",  self.contract_value_value),
-            ("Warranty",  self.warranty_value),
-        ]
-
-        for meta_caption, val_label in meta_pairs:
+        def _add_meta_col(caption: str, val_label: ElidingLabel) -> None:
             col = QVBoxLayout()
             col.setSpacing(0)
             col.setContentsMargins(0, 0, 0, 0)
-            caption_lbl = QLabel(meta_caption)
-            caption_lbl.setObjectName("MetaCaption")
+            cap = QLabel(caption)
+            cap.setObjectName("MetaCaption")
             val_label.setObjectName("MetaValue")
             val_label.setMinimumWidth(90)
             val_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            col.addWidget(caption_lbl)
+            col.addWidget(cap)
             col.addWidget(val_label)
             left_layout.addLayout(col, 2)
 
-        # Add Div25 button — no caption, just the button aligned to bottom
-        div25_col = QVBoxLayout()
-        div25_col.setSpacing(0)
-        div25_col.setContentsMargins(0, 0, 0, 0)
-        div25_col.addWidget(self.div25_btn, 1)
-        left_layout.addLayout(div25_col, 0)
+        _add_meta_col("Job #",    self.job_number_value)
+        _add_meta_col("PM",       self.pm_value)
+        _add_meta_col("SE",       self.sales_value)
+        _add_meta_col("Booked",   self.booked_value)
+        _add_meta_col("Contract", self.contract_value_value)
+        _add_meta_col("Warranty", self.warranty_value)
+
+        # WebPro ID + Div25 — side-by-side fixed-size buttons
+        self.webpro_id_btn = QPushButton("—")
+        self.webpro_id_btn.setObjectName("WebProIdBtn")
+        self.webpro_id_btn.setToolTip("Click to edit WebPro ID")
+        self.webpro_id_btn.setFixedWidth(80)
+        self.webpro_id_btn.setMinimumHeight(42)
+        self.webpro_id_btn.setEnabled(False)
+        self.webpro_id_btn.clicked.connect(self._edit_webpro_id)
+
+        btn_pair_col = QVBoxLayout()
+        btn_pair_col.setSpacing(0)
+        btn_pair_col.setContentsMargins(0, 0, 0, 0)
+        btn_pair_row = QHBoxLayout()
+        btn_pair_row.setSpacing(4)
+        btn_pair_row.setContentsMargins(0, 0, 0, 0)
+        btn_pair_row.addWidget(self.webpro_id_btn)
+        btn_pair_row.addWidget(self.div25_btn)
+        btn_pair_col.addLayout(btn_pair_row)
+        left_layout.addLayout(btn_pair_col, 0)
 
         row.addWidget(left_widget, 1)
 
@@ -3232,6 +3245,20 @@ class MainWindow(QMainWindow):
     def _open_div25(self) -> None:
         if self._div25_url:
             QDesktopServices.openUrl(QUrl(self._div25_url))
+
+    def _edit_webpro_id(self) -> None:
+        if self._current_user_view_only() or self.current_project_id is None:
+            return
+        project = self.backend.get_project(self.current_project_id)
+        if not project:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Edit WebPro ID", "WebPro ID:", text=project.webpro_id or ""
+        )
+        if not ok:
+            return
+        self.backend.update_project(self.current_project_id, webpro_id=text.strip())
+        self.load_current_project()
 
     def _open_notes(self) -> None:
         if self.current_project_id is None:
@@ -4276,6 +4303,8 @@ class MainWindow(QMainWindow):
         self.contract_value_value.setText(
             f"${float(project.contract_value):,.0f}" if project.contract_value else "—"
         )
+        self.webpro_id_btn.setText(project.webpro_id or "—")
+        self.webpro_id_btn.setEnabled(not self._current_user_view_only())
         self._div25_url = project.div25_url or ""
         self.div25_btn.setEnabled(bool(self._div25_url))
         self.div25_btn.setToolTip(self._div25_url or "No Div25 URL")
@@ -4314,6 +4343,8 @@ class MainWindow(QMainWindow):
             self.contract_value_value,
         ]:
             value_widget.setText("—")
+        self.webpro_id_btn.setText("—")
+        self.webpro_id_btn.setEnabled(False)
         self._div25_url = ""
         self.div25_btn.setEnabled(False)
         self.div25_btn.setToolTip("No Div25 URL")
@@ -4548,6 +4579,7 @@ class MainWindow(QMainWindow):
                 contract_value=record.contract_value,
                 job_docs=record.job_docs,
                 div25_url=record.div25_url,
+                webpro_id=record.webpro_id,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Unable to update project", str(exc))
@@ -5025,6 +5057,9 @@ QFrame#ResizeHandle:hover, QFrame#VResizeHandle:hover { background: #3b82f6; }
 QPushButton#Div25Btn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
 QPushButton#Div25Btn:hover { background: #2d5a8e; color: #87c3ff; }
 QPushButton#Div25Btn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
+QPushButton#WebProIdBtn { background: transparent; border: none; border-bottom: 1px dashed #4b5563; border-radius: 0px; color: #d1d5db; font-size: 9pt; text-align: left; padding: 1px 2px; }
+QPushButton#WebProIdBtn:hover { color: #ffffff; border-bottom: 1px solid #60a5fa; }
+QPushButton#WebProIdBtn:disabled { color: #4b5563; border-bottom: 1px dashed #374151; }
 QPlainTextEdit#ReadOnlyNotes { background: #050810; color: #9ca3af; border: 1px solid #2d3748; }
 QLabel#errorLabel { color: #ef4444; }
 QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }

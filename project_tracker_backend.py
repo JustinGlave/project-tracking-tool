@@ -37,6 +37,7 @@ class ProjectRecord:
     contract_value: str = ""
     job_docs: str = ""
     div25_url: str = ""
+    webpro_id: str = ""
     is_test: bool = False
     pinned: bool = False
     created_at: Optional[str] = None
@@ -333,6 +334,7 @@ class ProjectTrackerBackend:
             "contract_value": project.contract_value.strip(),
             "job_docs": project.job_docs.strip(),
             "div25_url": project.div25_url.strip(),
+            "webpro_id": project.webpro_id.strip(),
             "is_test": project.is_test,
             "pinned": project.pinned,
             "rss_files": list(project.rss_files),
@@ -372,6 +374,7 @@ class ProjectTrackerBackend:
             "contract_value",
             "job_docs",
             "div25_url",
+            "webpro_id",
             "pinned",
             "rss_files",
         }
@@ -1853,6 +1856,7 @@ class ProjectTrackerBackend:
             contract_value=project_dict.get("contract_value", ""),
             job_docs=project_dict.get("job_docs", ""),
             div25_url=project_dict.get("div25_url", ""),
+            webpro_id=project_dict.get("webpro_id", ""),
             is_test=bool(project_dict.get("is_test", False)),
             pinned=bool(project_dict.get("pinned", False)),
             rss_files=_migrate_rss_files(project_dict),

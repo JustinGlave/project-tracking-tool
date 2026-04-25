@@ -2,13 +2,13 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.4.0**
+**Current Version: v1.5.0**
 
 ---
 
 ## What It Does
 
-- Create and manage projects with full job details (PM, SE, contract value, owner, contractor, Div25 URL, etc.)
+- Create and manage projects with full job details (PM, SE, contract value, owner, contractor, WebPro ID, Div25 URL, etc.)
 - Two task templates — **Standard** and **Phoenix** — applied at job creation or swapped any time
 - Track tasks by phase with color-coded progress matching the segmented progress bar
 - Add notes and change orders to each job
@@ -24,6 +24,7 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Home Dashboard** — landing screen shows project count, overdue tasks, tasks due this week, total tasks, top-5 projects by contract value, 5 most recently added projects, and a live recent-activity feed
 - **Task Notes History** — each task carries a timestamped note thread; view and add entries from the right-click context menu ("Notes History")
 - **RSS Feed Attachments** — attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from the Notes window; view data in an interactive table with sortable columns; admins can add rows, edit rows, delete rows, and remove feeds; non-admins can submit proposed changes that are logged to the activity log
+- **WebPro ID** — store and display a WebPro ID on each job; shown in the project header alongside the Div25 button and editable with a single click
 - **Keyboard shortcuts** — Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search), Ctrl+Shift+F (task search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear active search)
 - Visual segmented progress bar showing completion by phase
 - Search and filter tasks by phase or keyword
