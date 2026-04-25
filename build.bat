@@ -39,7 +39,6 @@ pyinstaller ^
 if errorlevel 1 (
     echo.
     echo ERROR: PyInstaller build failed.
-    pause
     exit /b 1
 )
 echo [1/3] PyInstaller complete.
@@ -67,7 +66,6 @@ if %ISCC%=="" (
 if errorlevel 1 (
     echo.
     echo ERROR: Inno Setup build failed.
-    pause
     exit /b 1
 )
 echo [2/3] Installer created: dist\ProjectTrackingToolSetup.exe
@@ -99,4 +97,3 @@ echo  Upload to GitHub Release:
 echo    - ProjectTrackingTool.zip           (required for auto-updater)
 echo    - ProjectTrackingToolSetup.exe      (recommended for new users)
 echo.
-pause
