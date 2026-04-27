@@ -2613,7 +2613,7 @@ class MainWindow(QMainWindow):
 
         from version import __version__
         self.setWindowTitle(f"Project Tracking Tool v{__version__}")
-        self.resize(1460, 860)
+        self.resize(1600, 860)
         self.setMinimumSize(1180, 700)
         self.setAcceptDrops(True)
 
@@ -2661,7 +2661,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(0)
 
         sidebar = self._build_sidebar()
-        sidebar.setFixedWidth(242)
+        sidebar.setFixedWidth(400)
 
         root_layout.addWidget(sidebar)
         root_layout.addWidget(self._build_main_panel(), 1)
@@ -3015,7 +3015,7 @@ class MainWindow(QMainWindow):
         self.div25_btn = QPushButton("Div25 →")
         self.div25_btn.setObjectName("Div25Btn")
         self.div25_btn.setToolTip("Open Div25 project page")
-        self.div25_btn.setFixedWidth(80)
+        self.div25_btn.setFixedWidth(110)
         self.div25_btn.setMinimumHeight(42)
         self.div25_btn.setEnabled(False)
         self.div25_btn.clicked.connect(self._open_div25)
@@ -3027,7 +3027,7 @@ class MainWindow(QMainWindow):
             cap = QLabel(caption)
             cap.setObjectName("MetaCaption")
             val_label.setObjectName("MetaValue")
-            val_label.setMinimumWidth(90)
+            val_label.setMinimumWidth(60)
             val_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             col.addWidget(cap)
             col.addWidget(val_label)
@@ -3044,7 +3044,7 @@ class MainWindow(QMainWindow):
         self.webpro_id_btn = QPushButton("—")
         self.webpro_id_btn.setObjectName("WebProIdBtn")
         self.webpro_id_btn.setToolTip("Click to edit WebPro ID")
-        self.webpro_id_btn.setFixedWidth(80)
+        self.webpro_id_btn.setFixedWidth(110)
         self.webpro_id_btn.setMinimumHeight(42)
         self.webpro_id_btn.setEnabled(False)
         self.webpro_id_btn.clicked.connect(self._edit_webpro_id)
@@ -3067,7 +3067,7 @@ class MainWindow(QMainWindow):
         div25_col.addWidget(self.div25_btn)
 
         btn_pair = QHBoxLayout()
-        btn_pair.setSpacing(4)
+        btn_pair.setSpacing(8)
         btn_pair.setContentsMargins(0, 0, 0, 0)
         btn_pair.addLayout(webpro_col)
         btn_pair.addLayout(div25_col)
@@ -4247,8 +4247,8 @@ class MainWindow(QMainWindow):
                     )
 
             job_name = project.job_name or ""
-            if len(job_name) > 36:
-                job_name = job_name[:34] + "…"
+            if len(job_name) > 48:
+                job_name = job_name[:46] + "…"
             if project.pinned:
                 job_name = "📌 " + job_name
 
