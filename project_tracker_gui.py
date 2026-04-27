@@ -4038,11 +4038,15 @@ class MainWindow(QMainWindow):
         from updater import GITHUB_OWNER, GITHUB_REPO
         try:
             import urllib.request, json as _json
-            url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases"
+            url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page=100"
             req = urllib.request.Request(
                 url,
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": "ProjectTrackingTool"},
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "ProjectTrackingTool",
+                    "Cache-Control": "no-cache",
+                    "Pragma": "no-cache",
+                },
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 releases = _json.loads(resp.read().decode())
