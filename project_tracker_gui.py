@@ -3060,6 +3060,9 @@ class MainWindow(QMainWindow):
         div25_col = QVBoxLayout()
         div25_col.setSpacing(0)
         div25_col.setContentsMargins(0, 0, 0, 0)
+        div25_cap = QLabel("Div25")
+        div25_cap.setObjectName("MetaCaption")
+        div25_col.addWidget(div25_cap)
         div25_col.addWidget(self.div25_btn)
 
         btn_pair = QHBoxLayout()
@@ -5067,9 +5070,9 @@ QFrame#ResizeHandle:hover, QFrame#VResizeHandle:hover { background: #3b82f6; }
 QPushButton#Div25Btn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
 QPushButton#Div25Btn:hover { background: #2d5a8e; color: #87c3ff; }
 QPushButton#Div25Btn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
-QPushButton#WebProIdBtn { background: transparent; border: none; border-bottom: 1px dashed #4b5563; border-radius: 0px; color: #d1d5db; font-size: 9pt; text-align: left; padding: 1px 2px; }
-QPushButton#WebProIdBtn:hover { color: #ffffff; border-bottom: 1px solid #60a5fa; }
-QPushButton#WebProIdBtn:disabled { color: #4b5563; border-bottom: 1px dashed #374151; }
+QPushButton#WebProIdBtn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
+QPushButton#WebProIdBtn:hover { background: #2d5a8e; color: #87c3ff; }
+QPushButton#WebProIdBtn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
 QPlainTextEdit#ReadOnlyNotes { background: #050810; color: #9ca3af; border: 1px solid #2d3748; }
 QLabel#errorLabel { color: #ef4444; }
 QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }
@@ -5079,12 +5082,7 @@ QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
 
 def apply_phoenix_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
-    qss_path = str(_resource_path("phoenix_style.qss"))
-    if os.path.exists(qss_path):
-        with open(qss_path, "r") as fh:
-            app.setStyleSheet(fh.read())
-    else:
-        app.setStyleSheet(_EMBEDDED_QSS)
+    app.setStyleSheet(_EMBEDDED_QSS)
 
 
 
