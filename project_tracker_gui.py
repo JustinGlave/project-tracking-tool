@@ -4,6 +4,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import shutil
 import sys
 import threading
@@ -3987,6 +3988,10 @@ class MainWindow(QMainWindow):
         email_support_action.triggered.connect(self._email_support)
         help_menu.addAction(email_support_action)
 
+        bug_action = QAction("Submit Bug / Suggestion...", self)
+        bug_action.triggered.connect(self._submit_bug_suggestion)
+        help_menu.addAction(bug_action)
+
         help_menu.addSeparator()
 
         self.test_jobs_action = QAction("Show Test Jobs", self)
@@ -4049,11 +4054,13 @@ class MainWindow(QMainWindow):
 
             lines = []
             for rel in releases:
-                tag   = rel.get("tag_name", "").lstrip("vV")
-                name  = rel.get("name", tag)
+                name  = rel.get("name") or rel.get("tag_name", "")
                 date  = rel.get("published_at", "")[:10]
-                notes = rel.get("body", "").strip() or "No release notes."
-                lines.append(f"v{tag} — {name}  ({date})")
+                raw   = rel.get("body", "").strip() or "No release notes."
+                # Strip markdown heading/bold markers for plain text display
+                notes = re.sub(r"#{1,6}\s*", "", raw)
+                notes = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", notes)
+                lines.append(f"{name}  ({date})")
                 lines.append("─" * 48)
                 lines.append(notes)
                 lines.append("")
@@ -4106,7 +4113,10 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _email_support() -> None:
-        QDesktopServices.openUrl(QUrl("mailto:Justing@atsinc.org"))
+        QDesktopServices.openUrl(QUrl("mailto:justing@atsinc.org"))
+
+    def _submit_bug_suggestion(self) -> None:
+        BugSuggestionDialog(self).exec()
 
     def _build_shortcuts(self) -> None:
         delete_shortcut = QAction("Delete task", self)
@@ -5095,6 +5105,109 @@ QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
 """
 
 
+class WelcomeDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Welcome")
+        self.setModal(True)
+        self.setFixedWidth(440)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(28, 28, 28, 22)
+
+        title = QLabel("Project Tracking Tool")
+        title.setObjectName("dialogTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        subtitle = QLabel("Built for the ATS Phoenix team")
+        subtitle.setObjectName("dialogSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
+
+        layout.addSpacing(10)
+
+        body = QLabel(
+            "A tool to help manage Phoenix projects at ATS —\n"
+            "track tasks, change orders, notes, and team progress\n"
+            "from kickoff to closeout.\n\n"
+            "Made by Justin Glave\n\n"
+            "Questions or suggestions?\n"
+            "Email: justing@atsinc.org"
+        )
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        layout.addSpacing(12)
+
+        self._dont_show = QCheckBox("Don't show this again")
+        layout.addWidget(self._dont_show, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        layout.addSpacing(6)
+
+        btn = PrimaryButton("Get Started")
+        btn.setFixedWidth(130)
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def dont_show_again(self) -> bool:
+        return self._dont_show.isChecked()
+
+
+class BugSuggestionDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Submit Bug or Suggestion")
+        self.setModal(True)
+        self.resize(480, 340)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 16)
+
+        title = QLabel("Submit a Bug or Suggestion")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        self._subject = QLineEdit()
+        self._subject.setPlaceholderText("Brief summary")
+        form.addRow("Subject:", self._subject)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel("Message:"))
+        self._body = QPlainTextEdit()
+        self._body.setPlaceholderText("Describe the issue or suggestion in detail...")
+        self._body.setMinimumHeight(150)
+        layout.addWidget(self._body, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        send_btn = PrimaryButton("Send")
+        send_btn.setFixedWidth(90)
+        send_btn.clicked.connect(self._send)
+        cancel_btn = TertiaryButton("Cancel")
+        cancel_btn.setFixedWidth(90)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(send_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+    def _send(self) -> None:
+        subject = self._subject.text().strip() or "PTT Bug/Suggestion"
+        body = self._body.toPlainText().strip()
+        if not body:
+            QMessageBox.warning(self, "Empty message", "Please enter a message before sending.")
+            return
+        import urllib.parse
+        params = urllib.parse.urlencode({"subject": f"PTT: {subject}", "body": body})
+        QDesktopServices.openUrl(QUrl(f"mailto:justing@atsinc.org?{params}"))
+        self.accept()
+
+
 def apply_phoenix_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
     app.setStyleSheet(_EMBEDDED_QSS)
@@ -5170,6 +5283,13 @@ def main() -> int:
 
     window = MainWindow(current_user=current_user)
     window.showMaximized()
+
+    if settings.value("showWelcome", True, type=bool):
+        dlg = WelcomeDialog(window)
+        dlg.exec()
+        if dlg.dont_show_again():
+            settings.setValue("showWelcome", False)
+
     return int(app.exec())
 
 
