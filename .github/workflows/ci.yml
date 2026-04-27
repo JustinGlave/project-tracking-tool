@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Syntax & import check
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check all project Python files
+        run: |
+          python -m py_compile project_tracker_gui.py
+          python -m py_compile project_tracker_backend.py
+          python -m py_compile user_auth.py
+          python -m py_compile updater.py
+          python -m py_compile version.py
+          python -m py_compile financials_dashboard.py
+          python -m py_compile financials_dialog.py
+          python -m py_compile financials_excel.py
+          python -m py_compile financials_models.py
+
+      - name: Import check (catches missing deps and bad top-level code)
+        # GUI modules are excluded — they load Qt platform plugins which
+        # require a real display context even on Windows CI runners.
+        run: |
+          python -c "import project_tracker_backend"
+          python -c "import user_auth"
+          python -c "import updater"
+          python -c "import version"
+          python -c "import financials_models"
+          python -c "import financials_excel"

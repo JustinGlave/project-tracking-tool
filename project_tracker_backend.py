@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import tempfile
@@ -210,6 +211,8 @@ class ProjectTrackerBackend:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.current_user: str = ""
+        self._cache: Optional[dict[str, Any]] = None
+        self._cache_mtime: float = 0.0
         self._initialize_storage()
 
     def _initialize_storage(self) -> None:
@@ -259,7 +262,16 @@ class ProjectTrackerBackend:
                 "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
                 "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
             }
-        return json.loads(self.db_path.read_text(encoding="utf-8"))
+        try:
+            mtime = self.db_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        if self._cache is not None and mtime == self._cache_mtime:
+            return self._cache
+        data = json.loads(self.db_path.read_text(encoding="utf-8"))
+        self._cache = data
+        self._cache_mtime = mtime
+        return data
 
     def _save_data(self, data: dict[str, Any]) -> None:
         # Write to a temp file alongside the target, then rename — this ensures
@@ -286,6 +298,11 @@ class ProjectTrackerBackend:
         except Exception:
             tmp_path.unlink(missing_ok=True)
             raise
+        self._cache = data
+        try:
+            self._cache_mtime = self.db_path.stat().st_mtime
+        except OSError:
+            self._cache_mtime = 0.0
 
     @staticmethod
     def _next_id(items: list[dict[str, Any]]) -> int:
@@ -431,8 +448,12 @@ class ProjectTrackerBackend:
         target = self._find_project_dict(data, project_id)
         project_name = target["job_name"] if target else f"#{project_id}"
         self._log_activity(data, project_id, "deleted", "project", project_name)
+        task_ids = {int(t["id"]) for t in data.get("tasks", []) if int(t["project_id"]) == project_id}
         data["projects"] = [item for item in data["projects"] if int(item["id"]) != project_id]
         data["tasks"] = [item for item in data["tasks"] if int(item["project_id"]) != project_id]
+        data["notes"] = [n for n in data.get("notes", []) if int(n["project_id"]) != project_id]
+        data["change_orders"] = [c for c in data.get("change_orders", []) if int(c["project_id"]) != project_id]
+        data["task_notes"] = [tn for tn in data.get("task_notes", []) if int(tn["task_id"]) not in task_ids]
         data["activity_log"] = [a for a in data.get("activity_log", []) if int(a["project_id"]) != project_id]
         self._save_data(data)
 
@@ -678,11 +699,9 @@ class ProjectTrackerBackend:
         if self._find_project_dict(data, project_id) is None:
             raise ValueError(f"Project {project_id} not found.")
         new_id = int(data.get("next_note_id", 1))
-        existing = [n for n in data.get("notes", []) if int(n["project_id"]) == project_id]
-        note_number = len(existing) + 1
         data.setdefault("notes", []).append({
             "id": new_id, "project_id": project_id,
-            "note_number": note_number, "date": note_date.strip(),
+            "date": note_date.strip(),
             "content": content.strip(), "status": status,
             "closeout_comment": closeout_comment.strip(),
         })
@@ -706,27 +725,22 @@ class ProjectTrackerBackend:
     def delete_note(self, note_id: int) -> None:
         data = self._load_data()
         data["notes"] = [n for n in data.get("notes", []) if int(n["id"]) != note_id]
-        # Re-number remaining notes per project
-        by_project: dict[int, list] = {}
-        for n in data["notes"]:
-            by_project.setdefault(int(n["project_id"]), []).append(n)
-        for notes_list in by_project.values():
-            for i, n in enumerate(notes_list, start=1):
-                n["note_number"] = i
         self._save_data(data)
 
     def list_notes(self, project_id: int) -> list[NoteRecord]:
         data = self._load_data()
+        project_notes = sorted(
+            (n for n in data.get("notes", []) if int(n["project_id"]) == project_id),
+            key=lambda x: int(x.get("note_number") or x["id"]),
+        )
         return [
             NoteRecord(
                 id=n["id"], project_id=n["project_id"],
-                note_number=n["note_number"], date=n["date"],
+                note_number=i, date=n["date"],
                 content=n["content"], status=n["status"],
                 closeout_comment=n.get("closeout_comment", ""),
             )
-            for n in sorted(data.get("notes", []),
-                            key=lambda x: int(x["note_number"]))
-            if int(n["project_id"]) == project_id
+            for i, n in enumerate(project_notes, start=1)
         ]
 
     # ---------- change order methods ----------
@@ -885,6 +899,7 @@ class ProjectTrackerBackend:
         workbook_path: str | Path,
         sheet_name: Optional[str] = None,
         create_missing_tasks: bool = True,
+        task_template: str = "standard",
     ) -> int:
         workbook_file = Path(workbook_path)
         workbook = load_workbook(workbook_file, data_only=True)
@@ -909,7 +924,7 @@ class ProjectTrackerBackend:
             notes=f"Imported from workbook: {workbook_file.name}",
         )
 
-        imported_project_id = self.create_project(project, include_default_tasks=True)
+        imported_project_id = self.create_project(project, include_default_tasks=True, task_template=task_template)
         existing_tasks = {
             task.task_name.casefold(): task
             for task in self.list_tasks(imported_project_id)
@@ -1582,13 +1597,15 @@ class ProjectTrackerBackend:
         self._log_activity(data, project_id, "proposed", "rss", table_name, details)
         self._save_data(data)
 
-    def list_activity(self, project_id: int) -> list[ActivityRecord]:
+    def list_activity(self, project_id: int, limit: Optional[int] = None) -> list[ActivityRecord]:
         data = self._load_data()
         entries = [
             e for e in data.get("activity_log", [])
             if int(e["project_id"]) == project_id
         ]
         entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        if limit is not None:
+            entries = entries[:limit]
         return [
             ActivityRecord(
                 id=e["id"],
@@ -1682,7 +1699,7 @@ class ProjectTrackerBackend:
         ]
 
         activity = data.get("activity_log", [])
-        activity_sorted = sorted(activity, key=lambda a: a.get("timestamp", ""), reverse=True)
+        activity_sorted = heapq.nlargest(20, activity, key=lambda a: a.get("timestamp", ""))
         proj_names = {int(p["id"]): p.get("job_name", "Unknown") for p in projects}
         recent_activity = [
             {

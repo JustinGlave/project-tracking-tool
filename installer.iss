@@ -58,6 +58,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 [UninstallDelete]
 ; Clean up any files the app creates in its folder (logs, temp files)
 Type: filesandordirs; Name: "{app}"
+; Clean up session files left in %APPDATA%
+Type: files; Name: "{userappdata}\ATS Inc\Project Tracking Tool\session.json"
+Type: files; Name: "{userappdata}\ATS Inc\Project Tracking Tool\session_snapshot.json"
 
 [Code]
 // Ask user if they want to keep their data on uninstall

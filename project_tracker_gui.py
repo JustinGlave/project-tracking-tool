@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import os
+import shutil
 import sys
 import threading
 from datetime import datetime
@@ -28,7 +30,6 @@ def _app_data_path() -> Path:
     if not new_path.exists():
         legacy = Path(sys.executable).with_name("project_tracker_data.json")
         if legacy.exists():
-            import shutil
             shutil.copy2(legacy, new_path)
 
     return new_path
@@ -95,8 +96,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QInputDialog,
 )
-
-import shutil
 
 from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
 from updater import UpdateInfo, check_for_update, download_and_apply
@@ -1342,7 +1341,12 @@ class ChangeOrderWindow(QDialog):
 
         self.table.setRowCount(len(cos))
         for r, co in enumerate(cos):
-            sub_price = co.sub_quoted_price if co.sub_quoted_price else co.sub_plug_number
+            if co.sub_quoted_price:
+                sub_price, sub_price_src = co.sub_quoted_price, "Q"
+            elif co.sub_plug_number:
+                sub_price, sub_price_src = co.sub_plug_number, "P"
+            else:
+                sub_price, sub_price_src = "", ""
             ats_bg  = self._STATUS_BG.get(co.ats_status, QColor("#FFFFFF"))
             sub_bg  = self._STATUS_BG.get(co.sub_status, QColor("#FFFFFF"))
             def _fmt_price(v: str) -> str:
@@ -1353,12 +1357,13 @@ class ChangeOrderWindow(QDialog):
                 except ValueError:
                     return v
 
+            sub_price_display = f"{_fmt_price(sub_price)} ({sub_price_src})" if sub_price_src else ""
             row_vals = [
                 co.cop_number, co.reference, co.description, co.creation_date,
                 _fmt_price(co.ats_price), _fmt_price(co.ats_direct_cost),
                 co.ats_status, co.booked_in_portal,
                 co.ats_booked_co, co.mech_co,
-                co.sub_quoted_price, co.sub_plug_number, _fmt_price(sub_price),
+                co.sub_quoted_price, co.sub_plug_number, sub_price_display,
                 co.sub_status, co.sub_co_sent, co.sub_co_number, co.notes,
             ]
             for c, val in enumerate(row_vals):
@@ -3811,6 +3816,7 @@ class MainWindow(QMainWindow):
         self._current_user = ""
         self.backend.current_user = ""
         _SESSION_PATH.unlink(missing_ok=True)
+        _LOCAL_SNAPSHOT_PATH.unlink(missing_ok=True)
         self.current_project_id = None
         self._update_status_bar_user()
         self._update_auth_menu()
@@ -4094,7 +4100,8 @@ class MainWindow(QMainWindow):
             f"Project Tracking Tool\n"
             f"Version {__version__}\n\n"
             f"Built for the ATS team.\n"
-            f"© 2026 Justin Glave",
+            f"© 2026 Justin Glave\n\n"
+            f"Log file:\n{_LOG_PATH}",
         )
 
     @staticmethod
@@ -4733,6 +4740,12 @@ class MainWindow(QMainWindow):
     def import_workbook(self) -> None:
         if self._current_user_view_only():
             return
+        template, ok = QInputDialog.getItem(
+            self, "Import Workbook", "Task template:",
+            ["Standard", "Phoenix"], 0, False,
+        )
+        if not ok:
+            return
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Import workbook", "",
             "Excel Files (*.xlsx *.xlsm *.xltx *.xltm)",
@@ -4740,7 +4753,9 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         try:
-            imported_project_id = self.backend.import_project_from_workbook(file_path)
+            imported_project_id = self.backend.import_project_from_workbook(
+                file_path, task_template=template.lower()
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
             return
@@ -5086,7 +5101,27 @@ def apply_phoenix_theme(app: QApplication) -> None:
 
 
 
+_LOG_PATH = (
+    Path(os.environ.get("APPDATA", Path.home()))
+    / "ATS Inc" / "Project Tracking Tool" / "app.log"
+)
+
+
+def _setup_logging() -> None:
+    _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        _LOG_PATH, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.INFO)
+
+
 def main() -> int:
+    _setup_logging()
     app = QApplication(sys.argv)
     apply_phoenix_theme(app)
     settings = QSettings("ATSInc", "ProjectTrackingTool")
