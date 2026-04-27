@@ -17,7 +17,7 @@ echo.
 
 :: ── Step 1: PyInstaller ──────────────────────────────────────
 echo [1/3] Running PyInstaller...
-pyinstaller ^
+.venv\Scripts\pyinstaller ^
     --onedir ^
     --windowed ^
     --icon=PTT_Normal.ico ^
