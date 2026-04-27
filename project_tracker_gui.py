@@ -98,7 +98,17 @@ from PySide6.QtWidgets import (
     QInputDialog,
 )
 
-from project_tracker_backend import DEFAULT_TASKS, ChangeOrderRecord, NoteRecord, ProjectRecord, ProjectTrackerBackend, TaskRecord
+from project_tracker_backend import (
+    ADDRESS_BOOK_APPROVER,
+    AddressBookRecord,
+    ChangeOrderRecord,
+    DEFAULT_TASKS,
+    NoteRecord,
+    PendingDeleteRecord,
+    ProjectRecord,
+    ProjectTrackerBackend,
+    TaskRecord,
+)
 from updater import UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
 from financials_dashboard import FinancialsDashboardDialog
@@ -360,20 +370,6 @@ class TaskDialog(QDialog):
             if phase_index >= 0:
                 self.phase_combo.setCurrentIndex(phase_index)
 
-        self.due_date_check = QCheckBox("Has due date")
-        self.due_date_edit = QDateEdit()
-        self.due_date_edit.setCalendarPopup(True)
-        self.due_date_edit.setDisplayFormat("yyyy-MM-dd")
-        self.due_date_edit.setDate(QDate.currentDate())
-        if task and task.due_date:
-            self.due_date_check.setChecked(True)
-            parsed = QDate.fromString(task.due_date, "yyyy-MM-dd")
-            if parsed.isValid():
-                self.due_date_edit.setDate(parsed)
-        else:
-            self.due_date_edit.setEnabled(False)
-        self.due_date_check.toggled.connect(self.due_date_edit.setEnabled)
-
         self.completed_check = QCheckBox("Completed")
         self.completed_check.setChecked(task.is_complete if task else False)
 
@@ -393,8 +389,6 @@ class TaskDialog(QDialog):
         form_layout = QFormLayout()
         form_layout.addRow("Task", self.task_name_edit)
         form_layout.addRow("Phase", self.phase_combo)
-        form_layout.addRow("Due date", self.due_date_check)
-        form_layout.addRow("", self.due_date_edit)
         form_layout.addRow("Status", self.completed_check)
         form_layout.addRow("Completed date", self.completed_date_edit)
         form_layout.addRow("Notes", self.notes_edit)
@@ -411,11 +405,9 @@ class TaskDialog(QDialog):
 
     def get_data(self) -> dict[str, Any]:
         completed = self.completed_check.isChecked()
-        has_due = self.due_date_check.isChecked()
         return {
             "task_name": self.task_name_edit.text().strip(),
             "phase": self.phase_combo.currentText(),
-            "due_date": self.due_date_edit.date().toString("yyyy-MM-dd") if has_due else None,
             "is_complete": bool(completed),
             "completed_date": self.completed_date_edit.date().toString("yyyy-MM-dd") if completed else None,
             "notes": self.notes_edit.toPlainText().strip(),
@@ -2638,6 +2630,7 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         if self._current_user_view_only():
             self._apply_view_only_restrictions()
+        self._refresh_address_book_btn()
         self.refresh_project_list()
         QTimer.singleShot(0, self.refresh_project_list)
         QTimer.singleShot(200, self._check_recent_changes)
@@ -2795,6 +2788,11 @@ class MainWindow(QMainWindow):
         self.fin_dashboard_btn.clicked.connect(self._open_financials_dashboard)
         panel_layout.addWidget(self.fin_dashboard_btn)
 
+        self.address_book_btn = SecondaryButton("📖 Address Book")
+        self.address_book_btn.setToolTip("View and manage the shared address book")
+        self.address_book_btn.clicked.connect(self._open_address_book)
+        panel_layout.addWidget(self.address_book_btn)
+
         secondary_row = QHBoxLayout()
         self.edit_project_btn = SecondaryButton("Edit")
         self.edit_project_btn.setMinimumWidth(72)
@@ -2864,13 +2862,11 @@ class MainWindow(QMainWindow):
         cards_row = QHBoxLayout()
         cards_row.setSpacing(12)
         self._dash_projects_card = StatCard("Projects", "—")
-        self._dash_due_week_card = StatCard("Due This Week", "—")
-        self._dash_overdue_card = StatCard("Overdue", "—")
+        self._dash_incomplete_card = StatCard("Incomplete Tasks", "—")
         self._dash_tasks_card = StatCard("Total Tasks", "—")
         for card in [
             self._dash_projects_card,
-            self._dash_due_week_card,
-            self._dash_overdue_card,
+            self._dash_incomplete_card,
             self._dash_tasks_card,
         ]:
             cards_row.addWidget(card)
@@ -2950,8 +2946,7 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, KeyError):
             return
         self._dash_projects_card.set_value(str(stats["project_count"]))
-        self._dash_due_week_card.set_value(str(stats["due_this_week_count"]))
-        self._dash_overdue_card.set_value(str(stats["overdue_count"]))
+        self._dash_incomplete_card.set_value(str(stats["incomplete_count"]))
         self._dash_tasks_card.set_value(str(stats["total_tasks"]))
 
         self._dash_contract_table.setRowCount(0)
@@ -3222,9 +3217,9 @@ class MainWindow(QMainWindow):
 
         wrapper_layout.addLayout(top_row)
 
-        self.task_table = ReorderableTaskTable(0, 6)
+        self.task_table = ReorderableTaskTable(0, 5)
         self.task_table.setHorizontalHeaderLabels(
-            ["Done", "Task", "Phase", "Due Date", "Completed Date", "Notes"]
+            ["Done", "Task", "Phase", "Completed Date", "Notes"]
         )
         self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -3242,14 +3237,12 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setStretchLastSection(False)
         # Default column widths
         header.resizeSection(1, 280)
         header.resizeSection(2, 110)
-        header.resizeSection(3, 110)
-        header.resizeSection(4, 130)
+        header.resizeSection(3, 130)
         header.setSectionsClickable(True)
         header.sectionClicked.connect(self._on_header_clicked)
 
@@ -3462,6 +3455,7 @@ class MainWindow(QMainWindow):
         """Called after debounce — reload backend and refresh UI."""
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
         self.refresh_project_list()
+        self._refresh_address_book_btn()
 
     @staticmethod
     def _resolve_data_path() -> Path:
@@ -3687,6 +3681,21 @@ class MainWindow(QMainWindow):
         dlg = FinancialsDashboardDialog(provider=self._financials_provider, parent=self)
         dlg.exec()
 
+    def _open_address_book(self) -> None:
+        dlg = AddressBookDialog(self.backend, self._current_user, parent=self)
+        dlg.exec()
+        self._refresh_address_book_btn()
+
+    def _refresh_address_book_btn(self) -> None:
+        if self._current_user.casefold() == ADDRESS_BOOK_APPROVER.casefold():
+            count = self.backend.pending_delete_count()
+            if count:
+                self.address_book_btn.setText(f"📖 Address Book ({count})")
+                self.address_book_btn.setToolTip(f"{count} pending deletion request(s) awaiting your approval")
+            else:
+                self.address_book_btn.setText("📖 Address Book")
+                self.address_book_btn.setToolTip("View and manage the shared address book")
+
     def _check_sync_folder(self) -> None:
         """Warn if the app *executable* is running from a cloud-synced folder."""
         exe_path = str(Path(sys.executable).resolve()).lower()
@@ -3802,6 +3811,7 @@ class MainWindow(QMainWindow):
             self._apply_view_only_restrictions()
         self._update_status_bar_user()
         self._update_auth_menu()
+        self._refresh_address_book_btn()
         self._stack.setCurrentIndex(1)
         self.refresh_project_list()
 
@@ -4453,9 +4463,8 @@ class MainWindow(QMainWindow):
             0: lambda t: (0 if t.is_complete else 1),
             1: lambda t: t.task_name.casefold(),
             2: lambda t: t.phase.casefold(),
-            3: lambda t: t.due_date or "",
-            4: lambda t: t.completed_date or "",
-            5: lambda t: (t.notes or "").casefold(),
+            3: lambda t: t.completed_date or "",
+            4: lambda t: (t.notes or "").casefold(),
         }
         if self._sort_column in col_keys:
             filtered_tasks = sorted(
@@ -4463,8 +4472,6 @@ class MainWindow(QMainWindow):
                 key=col_keys[self._sort_column],
                 reverse=not self._sort_ascending,
             )
-
-        today_str = QDate.currentDate().toString("yyyy-MM-dd")
 
         self._populating = True
         try:
@@ -4485,16 +4492,10 @@ class MainWindow(QMainWindow):
                 phase_item.setForeground(QColor(PHASE_COLORS.get(task.phase, "#64748b")))
                 self.task_table.setItem(row_index, 2, phase_item)
 
-                # Due date — highlight overdue (past due, not completed) in red
-                due_item = QTableWidgetItem(task.due_date or "")
-                if task.due_date and not task.is_complete and task.due_date < today_str:
-                    due_item.setForeground(QColor("#f44336"))
-                self.task_table.setItem(row_index, 3, due_item)
+                self.task_table.setItem(row_index, 3, QTableWidgetItem(task.completed_date or ""))
+                self.task_table.setItem(row_index, 4, QTableWidgetItem(task.notes or ""))
 
-                self.task_table.setItem(row_index, 4, QTableWidgetItem(task.completed_date or ""))
-                self.task_table.setItem(row_index, 5, QTableWidgetItem(task.notes or ""))
-
-                for column_index in range(1, 6):
+                for column_index in range(1, 5):
                     item = self.task_table.item(row_index, column_index)
                     if item is not None:
                         item.setData(Qt.ItemDataRole.UserRole, task.id)
@@ -4860,7 +4861,6 @@ class MainWindow(QMainWindow):
                 project_id=self.current_project_id,
                 task_name=data["task_name"],
                 phase=data["phase"],
-                due_date=data["due_date"],
                 completed_date=data["completed_date"],
                 notes=data["notes"],
             )
@@ -5107,6 +5107,349 @@ QLabel#errorLabel { color: #ef4444; }
 QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }
 QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
 """
+
+
+class AddressEntryDialog(QDialog):
+    """Form dialog for creating or editing an address book entry."""
+
+    def __init__(
+        self,
+        record: Optional[AddressBookRecord] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Address" if record else "New Address")
+        self.setModal(True)
+        self.setFixedWidth(420)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 16)
+
+        title_lbl = QLabel("Edit Address Entry" if record else "New Address Entry")
+        title_lbl.setObjectName("SectionTitle")
+        layout.addWidget(title_lbl)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+
+        self._customer = QLineEdit(record.customer_name if record else "")
+        self._customer.setPlaceholderText("Required")
+        form.addRow("Customer Name:", self._customer)
+
+        self._business = QLineEdit(record.business_name if record else "")
+        form.addRow("Business Name:", self._business)
+
+        self._street = QLineEdit(record.street if record else "")
+        form.addRow("Street:", self._street)
+
+        self._addr1 = QLineEdit(record.address_line_1 if record else "")
+        form.addRow("Address Line 1:", self._addr1)
+
+        self._addr2 = QLineEdit(record.address_line_2 if record else "")
+        form.addRow("Address Line 2:", self._addr2)
+
+        self._city = QLineEdit(record.city if record else "")
+        form.addRow("City:", self._city)
+
+        state_zip = QHBoxLayout()
+        state_zip.setSpacing(6)
+        self._state = QLineEdit(record.state if record else "")
+        self._state.setPlaceholderText("State")
+        self._state.setMaximumWidth(80)
+        self._zip = QLineEdit(record.zip_code if record else "")
+        self._zip.setPlaceholderText("ZIP")
+        state_zip.addWidget(self._state)
+        state_zip.addWidget(self._zip)
+        form.addRow("State / ZIP:", state_zip)
+
+        layout.addLayout(form)
+
+        self._error_lbl = QLabel("")
+        self._error_lbl.setObjectName("errorLabel")
+        self._error_lbl.setWordWrap(True)
+        layout.addWidget(self._error_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = TertiaryButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = PrimaryButton("Save")
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(save_btn)
+        layout.addLayout(btn_row)
+
+    def _on_save(self) -> None:
+        if not self._customer.text().strip():
+            self._error_lbl.setText("Customer Name is required.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        return {
+            "customer_name": self._customer.text().strip(),
+            "business_name": self._business.text().strip(),
+            "street": self._street.text().strip(),
+            "address_line_1": self._addr1.text().strip(),
+            "address_line_2": self._addr2.text().strip(),
+            "city": self._city.text().strip(),
+            "state": self._state.text().strip(),
+            "zip_code": self._zip.text().strip(),
+        }
+
+
+class PendingDeletesDialog(QDialog):
+    """Shows pending address-book deletion requests for the approver to review."""
+
+    def __init__(self, backend: ProjectTrackerBackend, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.setWindowTitle("Pending Deletion Requests")
+        self.setModal(True)
+        self.resize(640, 400)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 16)
+
+        title = QLabel("Pending Deletion Requests")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        note = QLabel("Review each request and approve or reject it.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._table = QTableWidget(0, 5)
+        self._table.setHorizontalHeaderLabels(["Customer", "Business", "City/State", "Requested By", "Requested At"])
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        layout.addWidget(self._table, 1)
+
+        btn_row = QHBoxLayout()
+        self._approve_btn = PrimaryButton("✓ Approve Delete")
+        self._approve_btn.setToolTip("Permanently delete this entry")
+        self._approve_btn.clicked.connect(self._approve)
+        self._reject_btn = SecondaryButton("✗ Reject")
+        self._reject_btn.setToolTip("Cancel the deletion request — entry stays in the address book")
+        self._reject_btn.clicked.connect(self._reject)
+        close_btn = TertiaryButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self._approve_btn)
+        btn_row.addWidget(self._reject_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._pending: list[PendingDeleteRecord] = []
+        self._reload()
+
+    def _reload(self) -> None:
+        self._pending = self.backend.list_pending_deletes()
+        self._table.setRowCount(0)
+        for rec in self._pending:
+            snap = rec.record_snapshot
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            self._table.setItem(row, 0, QTableWidgetItem(snap.get("customer_name", "")))
+            self._table.setItem(row, 1, QTableWidgetItem(snap.get("business_name", "")))
+            city_state = f"{snap.get('city', '')}, {snap.get('state', '')} {snap.get('zip_code', '')}".strip(", ")
+            self._table.setItem(row, 2, QTableWidgetItem(city_state))
+            self._table.setItem(row, 3, QTableWidgetItem(rec.requested_by))
+            self._table.setItem(row, 4, QTableWidgetItem(rec.requested_at))
+        self._table.resizeColumnsToContents()
+        has_rows = len(self._pending) > 0
+        self._approve_btn.setEnabled(has_rows)
+        self._reject_btn.setEnabled(has_rows)
+
+    def _selected_pending(self) -> Optional[PendingDeleteRecord]:
+        rows = self._table.selectedItems()
+        if not rows:
+            QMessageBox.information(self, "No Selection", "Select a request first.")
+            return None
+        row = self._table.currentRow()
+        return self._pending[row] if row < len(self._pending) else None
+
+    def _approve(self) -> None:
+        rec = self._selected_pending()
+        if rec is None:
+            return
+        snap = rec.record_snapshot
+        name = snap.get("customer_name") or snap.get("business_name") or f"#{rec.record_id}"
+        reply = QMessageBox.question(
+            self, "Confirm Deletion",
+            f"Permanently delete <b>{name}</b>?<br>This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.backend.approve_pending_delete(rec.id)
+            self._reload()
+
+    def _reject(self) -> None:
+        rec = self._selected_pending()
+        if rec is None:
+            return
+        self.backend.reject_pending_delete(rec.id)
+        self._reload()
+
+
+class AddressBookDialog(QDialog):
+    """Address book — all users can add/edit; deletion requires approver sign-off."""
+
+    def __init__(
+        self,
+        backend: ProjectTrackerBackend,
+        current_user: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.backend = backend
+        self.current_user = current_user
+        self._is_approver = current_user.casefold() == ADDRESS_BOOK_APPROVER.casefold()
+        self.setWindowTitle("Address Book")
+        self.setModal(True)
+        self.resize(780, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 16)
+
+        title_row = QHBoxLayout()
+        title = QLabel("Address Book")
+        title.setObjectName("SectionTitle")
+        title_row.addWidget(title, 1)
+
+        if self._is_approver:
+            self._pending_btn = SecondaryButton("⚠ Review Pending Deletions")
+            self._pending_btn.setToolTip("Review and approve or reject pending deletion requests")
+            self._pending_btn.clicked.connect(self._open_pending)
+            title_row.addWidget(self._pending_btn)
+        else:
+            self._pending_btn = None
+
+        layout.addLayout(title_row)
+
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search by customer, business, or city…")
+        self._search.textChanged.connect(self._reload)
+        layout.addWidget(self._search)
+
+        self._table = QTableWidget(0, 6)
+        self._table.setHorizontalHeaderLabels(["Customer Name", "Business Name", "Street", "Address Lines", "City", "State / ZIP"])
+        self._table.horizontalHeader().setStretchLastSection(False)
+        self._table.horizontalHeader().setSectionResizeMode(0, self._table.horizontalHeader().ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, self._table.horizontalHeader().ResizeMode.Stretch)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.doubleClicked.connect(self._edit_entry)
+        layout.addWidget(self._table, 1)
+
+        self._records: list[AddressBookRecord] = []
+
+        btn_row = QHBoxLayout()
+        add_btn = PrimaryButton("+ Add")
+        add_btn.clicked.connect(self._add_entry)
+        self._edit_btn = SecondaryButton("Edit")
+        self._edit_btn.clicked.connect(self._edit_entry)
+        self._delete_btn = TertiaryButton("Request Delete" if not self._is_approver else "Delete")
+        self._delete_btn.setToolTip(
+            "Submit a deletion request for approval" if not self._is_approver
+            else "Immediately delete this entry"
+        )
+        self._delete_btn.clicked.connect(self._delete_entry)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(self._edit_btn)
+        btn_row.addWidget(self._delete_btn)
+        btn_row.addStretch()
+        close_btn = TertiaryButton("Close")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self._reload()
+
+    def _reload(self) -> None:
+        self._records = self.backend.list_address_book(self._search.text())
+        self._table.setRowCount(0)
+        for rec in self._records:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+            self._table.setItem(row, 0, QTableWidgetItem(rec.customer_name))
+            self._table.setItem(row, 1, QTableWidgetItem(rec.business_name))
+            self._table.setItem(row, 2, QTableWidgetItem(rec.street))
+            addr_lines = "\n".join(filter(None, [rec.address_line_1, rec.address_line_2]))
+            self._table.setItem(row, 3, QTableWidgetItem(addr_lines))
+            self._table.setItem(row, 4, QTableWidgetItem(rec.city))
+            state_zip = f"{rec.state} {rec.zip_code}".strip()
+            self._table.setItem(row, 5, QTableWidgetItem(state_zip))
+        self._table.resizeColumnsToContents()
+        if self._pending_btn is not None:
+            count = self.backend.pending_delete_count()
+            self._pending_btn.setText(f"⚠ Pending Deletions ({count})" if count else "Pending Deletions")
+            self._pending_btn.setVisible(True)
+
+    def _selected_record(self) -> Optional[AddressBookRecord]:
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._records):
+            QMessageBox.information(self, "No Selection", "Select an entry first.")
+            return None
+        return self._records[row]
+
+    def _add_entry(self) -> None:
+        dlg = AddressEntryDialog(parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.backend.add_address(**dlg.values())
+            self._reload()
+
+    def _edit_entry(self) -> None:
+        rec = self._selected_record()
+        if rec is None:
+            return
+        dlg = AddressEntryDialog(record=rec, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.backend.update_address(rec.id, **dlg.values())
+            self._reload()
+
+    def _delete_entry(self) -> None:
+        rec = self._selected_record()
+        if rec is None:
+            return
+        name = rec.customer_name or rec.business_name or f"#{rec.id}"
+        if self._is_approver:
+            reply = QMessageBox.question(
+                self, "Confirm Delete",
+                f"Permanently delete <b>{name}</b>?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.backend.delete_address_direct(rec.id)
+                self._reload()
+        else:
+            reply = QMessageBox.question(
+                self, "Request Deletion",
+                f"Submit a deletion request for <b>{name}</b>?<br>"
+                f"The entry will remain until an administrator approves it.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.backend.request_delete_address(rec.id)
+                QMessageBox.information(
+                    self, "Request Submitted",
+                    "Your deletion request has been submitted for approval.",
+                )
+                self._reload()
+
+    def _open_pending(self) -> None:
+        dlg = PendingDeletesDialog(self.backend, parent=self)
+        dlg.exec()
+        self._reload()
 
 
 class WelcomeDialog(QDialog):

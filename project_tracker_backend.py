@@ -55,7 +55,6 @@ class TaskRecord:
     task_name: str = ""
     phase: str = "General"
     sort_order: int = 0
-    due_date: Optional[str] = None
     completed_date: Optional[str] = None
     is_complete: bool = False
     notes: str = ""
@@ -114,6 +113,38 @@ class ChangeOrderRecord:
     sub_co_sent: str = ""
     sub_co_number: str = ""
     notes: str = ""
+
+
+# Username that must approve address-book deletion requests.
+# Must match the login username exactly (case-insensitive comparison is used).
+ADDRESS_BOOK_APPROVER = "jglave"
+
+
+@dataclass(slots=True)
+class AddressBookRecord:
+    id: Optional[int] = None
+    customer_name: str = ""
+    business_name: str = ""
+    street: str = ""
+    address_line_1: str = ""
+    address_line_2: str = ""
+    city: str = ""
+    state: str = ""
+    zip_code: str = ""
+    created_by: str = ""
+    created_at: Optional[str] = None
+    updated_by: str = ""
+    updated_at: Optional[str] = None
+
+
+@dataclass(slots=True)
+class PendingDeleteRecord:
+    id: Optional[int] = None
+    record_type: str = "address"
+    record_id: int = 0
+    record_snapshot: dict = field(default_factory=dict)
+    requested_by: str = ""
+    requested_at: str = ""
 
 
 # Tuple of dicts — immutable at the container level, preventing accidental
@@ -243,6 +274,14 @@ class ProjectTrackerBackend:
                 data["task_notes"] = []; changed = True
             if "next_task_note_id" not in data:
                 data["next_task_note_id"] = 1; changed = True
+            if "address_book" not in data:
+                data["address_book"] = []; changed = True
+            if "next_address_id" not in data:
+                data["next_address_id"] = 1; changed = True
+            if "pending_deletes" not in data:
+                data["pending_deletes"] = []; changed = True
+            if "next_pending_id" not in data:
+                data["next_pending_id"] = 1; changed = True
             if changed:
                 self._save_data(data)
             return
@@ -250,8 +289,10 @@ class ProjectTrackerBackend:
         self._save_data({
             "projects": [], "tasks": [], "notes": [], "change_orders": [],
             "activity_log": [], "task_notes": [],
+            "address_book": [], "pending_deletes": [],
             "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
             "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
         })
 
     def _load_data(self) -> dict[str, Any]:
@@ -259,8 +300,10 @@ class ProjectTrackerBackend:
             return {
                 "projects": [], "tasks": [], "notes": [], "change_orders": [],
                 "activity_log": [], "task_notes": [],
+                "address_book": [], "pending_deletes": [],
                 "next_project_id": 1, "next_task_id": 1, "next_note_id": 1,
                 "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+                "next_address_id": 1, "next_pending_id": 1,
             }
         try:
             mtime = self.db_path.stat().st_mtime
@@ -509,7 +552,6 @@ class ProjectTrackerBackend:
         task_name: str,
         phase: str = "General",
         sort_order: Optional[int] = None,
-        due_date: Optional[str] = None,
         completed_date: Optional[str] = None,
         notes: str = "",
     ) -> int:
@@ -534,7 +576,6 @@ class ProjectTrackerBackend:
             sort_order if sort_order is not None
             else self._next_sort_order_from_data(data, project_id)
         )
-        normalized_due_date = self._normalize_date(due_date)
         normalized_completed_date = self._normalize_date(completed_date)
         new_task_id = int(data["next_task_id"])
 
@@ -544,7 +585,6 @@ class ProjectTrackerBackend:
             "task_name": cleaned_task_name,
             "phase": cleaned_phase,
             "sort_order": int(new_sort_order),
-            "due_date": normalized_due_date,
             "completed_date": normalized_completed_date,
             "is_complete": bool(normalized_completed_date),
             "notes": notes.strip(),
@@ -563,7 +603,6 @@ class ProjectTrackerBackend:
             "task_name",
             "phase",
             "sort_order",
-            "due_date",
             "completed_date",
             "is_complete",
             "notes",
@@ -576,8 +615,6 @@ class ProjectTrackerBackend:
         if not updates:
             return
 
-        if "due_date" in updates:
-            updates["due_date"] = self._normalize_date(updates["due_date"])
         if "completed_date" in updates:
             updates["completed_date"] = self._normalize_date(updates["completed_date"])
         if "completed_date" in updates and "is_complete" not in updates:
@@ -1683,20 +1720,12 @@ class ProjectTrackerBackend:
 
     def get_dashboard_stats(self) -> dict:
         """Summary statistics for the home screen dashboard."""
-        from datetime import timedelta
         data = self._load_data()
         projects = data.get("projects", [])
         tasks = data.get("tasks", [])
-        today = date.today().isoformat()
-        week_str = (date.today() + timedelta(days=7)).isoformat()
 
         active_projects = [p for p in projects if not p.get("is_test", False)]
         incomplete_tasks = [t for t in tasks if not t.get("is_complete", False)]
-        overdue = [t for t in incomplete_tasks if t.get("due_date") and t["due_date"] < today]
-        due_this_week = [
-            t for t in incomplete_tasks
-            if t.get("due_date") and today <= t["due_date"] <= week_str
-        ]
 
         activity = data.get("activity_log", [])
         activity_sorted = heapq.nlargest(20, activity, key=lambda a: a.get("timestamp", ""))
@@ -1743,8 +1772,7 @@ class ProjectTrackerBackend:
 
         return {
             "project_count": len(active_projects),
-            "overdue_count": len(overdue),
-            "due_this_week_count": len(due_this_week),
+            "incomplete_count": len(incomplete_tasks),
             "total_tasks": len(tasks),
             "recent_activity": recent_activity,
             "top_contract": top_contract,
@@ -1891,7 +1919,6 @@ class ProjectTrackerBackend:
             task_name=task_dict["task_name"],
             phase=task_dict["phase"],
             sort_order=task_dict["sort_order"],
-            due_date=task_dict.get("due_date"),
             completed_date=task_dict["completed_date"],
             is_complete=bool(task_dict["is_complete"]),
             notes=task_dict["notes"],
@@ -1942,6 +1969,161 @@ class ProjectTrackerBackend:
     @staticmethod
     def _now_iso() -> str:
         return datetime.now().replace(microsecond=0).isoformat(sep=" ")
+
+
+    # ---------- address book methods ----------
+
+    def _address_from_dict(self, d: dict[str, Any]) -> AddressBookRecord:
+        return AddressBookRecord(
+            id=int(d["id"]),
+            customer_name=d.get("customer_name", ""),
+            business_name=d.get("business_name", ""),
+            street=d.get("street", ""),
+            address_line_1=d.get("address_line_1", ""),
+            address_line_2=d.get("address_line_2", ""),
+            city=d.get("city", ""),
+            state=d.get("state", ""),
+            zip_code=d.get("zip_code", ""),
+            created_by=d.get("created_by", ""),
+            created_at=d.get("created_at"),
+            updated_by=d.get("updated_by", ""),
+            updated_at=d.get("updated_at"),
+        )
+
+    def list_address_book(self, search_text: str = "") -> list[AddressBookRecord]:
+        data = self._load_data()
+        entries = data.get("address_book", [])
+        q = search_text.strip().casefold()
+        if q:
+            entries = [
+                e for e in entries
+                if q in str(e.get("customer_name", "")).casefold()
+                or q in str(e.get("business_name", "")).casefold()
+                or q in str(e.get("city", "")).casefold()
+            ]
+        return [self._address_from_dict(e) for e in sorted(entries, key=lambda e: str(e.get("customer_name", "")).casefold())]
+
+    def get_address(self, address_id: int) -> Optional[AddressBookRecord]:
+        data = self._load_data()
+        entry = next((e for e in data.get("address_book", []) if int(e["id"]) == address_id), None)
+        return self._address_from_dict(entry) if entry else None
+
+    def add_address(
+        self,
+        customer_name: str = "",
+        business_name: str = "",
+        street: str = "",
+        address_line_1: str = "",
+        address_line_2: str = "",
+        city: str = "",
+        state: str = "",
+        zip_code: str = "",
+    ) -> int:
+        data = self._load_data()
+        new_id = int(data.get("next_address_id", 1))
+        now = self._now_iso()
+        data.setdefault("address_book", []).append({
+            "id": new_id,
+            "customer_name": customer_name.strip(),
+            "business_name": business_name.strip(),
+            "street": street.strip(),
+            "address_line_1": address_line_1.strip(),
+            "address_line_2": address_line_2.strip(),
+            "city": city.strip(),
+            "state": state.strip(),
+            "zip_code": zip_code.strip(),
+            "created_by": self.current_user,
+            "created_at": now,
+            "updated_by": self.current_user,
+            "updated_at": now,
+        })
+        data["next_address_id"] = new_id + 1
+        self._save_data(data)
+        return new_id
+
+    def update_address(self, address_id: int, **changes: Any) -> None:
+        allowed = {"customer_name", "business_name", "street", "address_line_1",
+                   "address_line_2", "city", "state", "zip_code"}
+        updates = {k: v.strip() if isinstance(v, str) else v for k, v in changes.items() if k in allowed}
+        if not updates:
+            return
+        data = self._load_data()
+        entry = next((e for e in data.get("address_book", []) if int(e["id"]) == address_id), None)
+        if entry is None:
+            return
+        for k, v in updates.items():
+            entry[k] = v
+        entry["updated_by"] = self.current_user
+        entry["updated_at"] = self._now_iso()
+        self._save_data(data)
+
+    def request_delete_address(self, address_id: int) -> int:
+        """Queue a deletion request for approval by ADDRESS_BOOK_APPROVER."""
+        data = self._load_data()
+        entry = next((e for e in data.get("address_book", []) if int(e["id"]) == address_id), None)
+        if entry is None:
+            raise ValueError(f"Address {address_id} not found.")
+        # Avoid duplicate pending requests for the same record
+        existing = next(
+            (p for p in data.get("pending_deletes", []) if int(p["record_id"]) == address_id),
+            None,
+        )
+        if existing:
+            return int(existing["id"])
+        new_id = int(data.get("next_pending_id", 1))
+        data.setdefault("pending_deletes", []).append({
+            "id": new_id,
+            "record_type": "address",
+            "record_id": address_id,
+            "record_snapshot": dict(entry),
+            "requested_by": self.current_user,
+            "requested_at": self._now_iso(),
+        })
+        data["next_pending_id"] = new_id + 1
+        self._save_data(data)
+        return new_id
+
+    def delete_address_direct(self, address_id: int) -> None:
+        """Directly remove an address entry (only for ADDRESS_BOOK_APPROVER)."""
+        data = self._load_data()
+        data["address_book"] = [e for e in data.get("address_book", []) if int(e["id"]) != address_id]
+        data["pending_deletes"] = [
+            p for p in data.get("pending_deletes", []) if int(p["record_id"]) != address_id
+        ]
+        self._save_data(data)
+
+    def list_pending_deletes(self) -> list[PendingDeleteRecord]:
+        data = self._load_data()
+        return [
+            PendingDeleteRecord(
+                id=int(p["id"]),
+                record_type=p.get("record_type", "address"),
+                record_id=int(p["record_id"]),
+                record_snapshot=dict(p.get("record_snapshot", {})),
+                requested_by=p.get("requested_by", ""),
+                requested_at=p.get("requested_at", ""),
+            )
+            for p in data.get("pending_deletes", [])
+        ]
+
+    def pending_delete_count(self) -> int:
+        data = self._load_data()
+        return len(data.get("pending_deletes", []))
+
+    def approve_pending_delete(self, pending_id: int) -> None:
+        data = self._load_data()
+        pending = next((p for p in data.get("pending_deletes", []) if int(p["id"]) == pending_id), None)
+        if pending is None:
+            return
+        record_id = int(pending["record_id"])
+        data["address_book"] = [e for e in data.get("address_book", []) if int(e["id"]) != record_id]
+        data["pending_deletes"] = [p for p in data["pending_deletes"] if int(p["id"]) != pending_id]
+        self._save_data(data)
+
+    def reject_pending_delete(self, pending_id: int) -> None:
+        data = self._load_data()
+        data["pending_deletes"] = [p for p in data.get("pending_deletes", []) if int(p["id"]) != pending_id]
+        self._save_data(data)
 
 
 if __name__ == "__main__":

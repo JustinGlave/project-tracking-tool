@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.6.2**
+**Current Version: v1.7.0**
 
 ---
 
@@ -14,14 +14,14 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - Add notes and change orders to each job
 - **Role-based access** — Admin, User, and View Only roles with per-role restrictions
 - **Pin projects** to the top of the list with a 📌 indicator
-- **Task due dates** — set due dates on tasks; overdue tasks highlight red
+- **Address Book** — shared contact directory; any user can add or edit entries; deletions require approval from the designated approver account
 - **Drag to reorder tasks** within a project
 - **Compact view** — toggle a condensed row layout to see more tasks at once
 - **Bulk complete / uncomplete** — mark all visible tasks done or undone in one click (with confirmation)
 - **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
 - **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
 - **Financials Dashboard** — view financial data across all projects in one window, with separate tabs for active jobs, labor hours & cost, and warranty/archived jobs; sortable columns, live search, and totals row
-- **Home Dashboard** — landing screen shows project count, overdue tasks, tasks due this week, total tasks, top-5 projects by contract value, 5 most recently added projects, and a live recent-activity feed
+- **Home Dashboard** — landing screen shows project count, incomplete tasks, total tasks, top-5 projects by contract value, 5 most recently added projects, and a live recent-activity feed
 - **Task Notes History** — each task carries a timestamped note thread; view and add entries from the right-click context menu ("Notes History")
 - **RSS Feed Attachments** — attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from the Notes window; view data in an interactive table with sortable columns; admins can add rows, edit rows, delete rows, and remove feeds; non-admins can submit proposed changes that are logged to the activity log
 - **WebPro ID** — store and display a WebPro ID on each job; shown in the project header alongside the Div25 button and editable with a single click
@@ -78,7 +78,7 @@ If you selected the wrong template when creating a job, you can reset it:
 
 When no project is selected the main panel shows the Home Dashboard:
 
-- **Stat cards** — Projects, Due This Week, Overdue, Total Tasks
+- **Stat cards** — Projects, Incomplete Tasks, Total Tasks
 - **Top 5 by Contract Value** and **5 Most Recently Added** project tables
 - **Recent Activity** feed showing the last 20 actions across all projects
 
@@ -89,7 +89,6 @@ Click any project in the sidebar to open it; click an empty area of the sidebar 
 - Click **Add Task** to add a custom task
 - Check the **Done** checkbox on any row to mark a task complete
 - **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**, **Notes History**
-- Set a **Due Date** on any task — overdue incomplete tasks highlight red automatically
 - **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
 - Filter by phase using the **All phases** dropdown, or search by keyword in the **Filter tasks** box
@@ -179,6 +178,15 @@ The dashboard shows financial data for all projects from your ODIN tracking work
 - The totals row at the bottom of each tab sums money columns and averages margin percentages
 
 > Jobs with no name (blank or "0.0") are excluded from all tabs.
+
+### Using the Address Book
+
+Click **📖 Address Book** in the sidebar to open the shared contact directory.
+
+- **Any user** can add or edit entries (Customer Name, Business Name, Street, Address Lines, City, State, ZIP)
+- To delete an entry, click **Request Delete** — the entry stays visible until the designated approver approves it
+- The approver sees a count badge on the button (e.g. **📖 Address Book (2)**) when requests are waiting
+- The approver can click **Review Pending Deletions** inside the dialog to approve or reject each request; they can also delete entries directly without the approval queue
 
 ### Viewing the Activity Log
 
