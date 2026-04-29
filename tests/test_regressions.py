@@ -4,6 +4,7 @@ import shutil
 import unittest
 import uuid
 import json
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,11 @@ from project_tracker_backend import (
     parse_currency,
 )
 from user_auth import AuthStoreError, UserManager
+from updater import (
+    UpdatePackageError,
+    _build_update_powershell_script,
+    _validate_update_zip,
+)
 
 
 class TempWorkspaceTest(unittest.TestCase):
@@ -158,6 +164,35 @@ class BackendRegressionTests(TempWorkspaceTest):
         backend.replace_project_tasks(project_id, "phoenix")
 
         self.assertEqual(backend.list_task_notes(old_task_id), [])
+
+
+class UpdaterRegressionTests(TempWorkspaceTest):
+    def test_update_zip_requires_internal_runtime_folder(self) -> None:
+        zip_path = self.tmp / "ProjectTrackingTool.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("ProjectTrackingTool.exe", "stub")
+
+        with self.assertRaises(UpdatePackageError):
+            _validate_update_zip(zip_path)
+
+    def test_update_zip_accepts_full_flat_payload(self) -> None:
+        zip_path = self.tmp / "ProjectTrackingTool.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("ProjectTrackingTool.exe", "stub")
+            zf.writestr("_internal/runtime.dll", "stub")
+
+        _validate_update_zip(zip_path)
+
+    def test_update_script_copies_payload_contents_to_install_folder(self) -> None:
+        script = _build_update_powershell_script(
+            self.tmp / "ProjectTrackingTool.zip",
+            self.tmp / "install",
+            self.tmp / "install" / "ProjectTrackingTool.exe",
+        )
+
+        self.assertIn("Get-ChildItem -LiteralPath $payload -Force", script)
+        self.assertIn("Copy-Item -Destination $installDir -Recurse -Force", script)
+        self.assertIn("_internal", script)
 
 
 if __name__ == "__main__":

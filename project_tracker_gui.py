@@ -59,6 +59,10 @@ def _backup_data_file(data_path: Path) -> None:
             old.unlink()
         except OSError:
             pass
+
+
+class StartupCheckError(RuntimeError):
+    """Raised when a required startup check fails before the UI can run safely."""
 from typing import Any, Optional
 
 from PySide6.QtCore import QDate, QFileSystemWatcher, QSize, Qt, QRectF, QTimer, Signal, QSettings, QUrl
@@ -112,7 +116,7 @@ from project_tracker_backend import (
     TaskRecord,
     parse_currency,
 )
-from updater import UpdateInfo, check_for_update, download_and_apply
+from updater import GITHUB_OWNER, GITHUB_REPO, UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
 from financials_dashboard import FinancialsDashboardDialog
 from financials_excel import ExcelFinancialsProvider, SnapshotFinancialsProvider
@@ -1430,9 +1434,13 @@ class ChangeOrderWindow(QDialog):
 
 
 class StatCard(QFrame):
+    clicked = Signal()
+
     def __init__(self, title: str, value: str = "0") -> None:
         super().__init__()
         self.setObjectName("StatCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("active", False)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("StatTitle")
         self.value_label = QLabel(value)
@@ -1447,11 +1455,22 @@ class StatCard(QFrame):
     def set_value(self, value: str) -> None:
         self.value_label.setText(value)
 
+    def set_active(self, active: bool) -> None:
+        self.setProperty("active", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
 
 class SegmentedProgressBar(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(12)
+        self.setFixedHeight(8)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._segments: list[dict] = []
         self._rects: list[tuple[int, int, dict]] = []  # (x, width, seg) for hit-testing
@@ -1495,7 +1514,7 @@ class SegmentedProgressBar(QWidget):
         w = self.width()
         h = self.height()
         r = h // 2
-        gap = 2
+        gap = 1
 
         rects: list[tuple[int, int, dict]] = []
         x = 0
@@ -1518,6 +1537,8 @@ class SegmentedProgressBar(QWidget):
         for i, (sx, seg_w, seg) in enumerate(rects):
             is_first = i == 0
             is_last = i == last_i
+            color = QColor(seg["color"])
+            color.setAlpha(170)
 
             dim = QColor(seg["color"])
             dim.setAlpha(60)
@@ -1527,7 +1548,7 @@ class SegmentedProgressBar(QWidget):
             if seg["done"] > 0:
                 fill_w = max(0, int(round(seg_w * seg["done"] / seg["total"])))
                 if fill_w > 0:
-                    painter.setBrush(QColor(seg["color"]))
+                    painter.setBrush(color)
                     fill_is_full = fill_w >= seg_w
                     self._draw_segment(
                         painter, sx, 0, fill_w, h, r,
@@ -1692,8 +1713,8 @@ class UpdateBanner(QFrame):
         layout.addWidget(msg, 1)
 
         if info.release_notes:
-            notes_btn = TertiaryButton("What's new?")
-            notes_btn.setFixedWidth(120)
+            notes_btn = TertiaryButton("Release Notes")
+            notes_btn.setFixedWidth(132)
             notes_btn.clicked.connect(lambda: QMessageBox.information(
                 self, f"What's new in v{info.latest_version}",
                 info.release_notes,
@@ -2641,7 +2662,17 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._update_ready.connect(self._show_update_banner)
         self._current_user = current_user
-        self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        try:
+            data_path = self._resolve_data_path()
+        except OSError as exc:
+            raise StartupCheckError(f"Data location could not be opened:\n{exc}") from exc
+        self._startup_self_check_warnings = self._collect_startup_self_check(data_path)
+        try:
+            self.backend = ProjectTrackerBackend(data_path)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise StartupCheckError(
+                f"Project data could not be opened:\n{data_path}\n\n{exc}"
+            ) from exc
         self.backend.current_user = current_user
         self.current_project_id: Optional[int] = None
         self._financials_provider: Optional[ExcelFinancialsProvider | SnapshotFinancialsProvider] = self._build_financials_provider()
@@ -2651,6 +2682,7 @@ class MainWindow(QMainWindow):
         self._populating = False
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
+        self._task_status_filter: str = "all"
         self._div25_url: str = ""
         self._show_test_jobs: bool = False
         self._compact_mode: bool = False
@@ -2664,6 +2696,7 @@ class MainWindow(QMainWindow):
         self._start_file_watcher()
 
         from version import __version__
+        self._app_version = __version__
         self.setWindowTitle(f"Project Tracking Tool v{__version__}")
         self.resize(1600, 860)
         self.setMinimumSize(1180, 700)
@@ -2686,6 +2719,8 @@ class MainWindow(QMainWindow):
         self.refresh_project_list()
         QTimer.singleShot(0, self.refresh_project_list)
         QTimer.singleShot(200, self._check_recent_changes)
+        if self._startup_self_check_warnings:
+            QTimer.singleShot(700, self._show_startup_self_check_warnings)
 
         # Warn if running from a cloud-synced folder
         self._check_sync_folder()
@@ -2722,8 +2757,12 @@ class MainWindow(QMainWindow):
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+        self._version_status_lbl = QLabel(f"v{self._app_version}")
+        self._version_status_lbl.setObjectName("VersionStatus")
+        self._version_status_lbl.setToolTip("Current installed version")
         self._user_status_lbl = QLabel()
         self._user_status_lbl.setObjectName("hint")
+        self.status_bar.addPermanentWidget(self._version_status_lbl)
         self.status_bar.addPermanentWidget(self._user_status_lbl)
         self.status_bar.showMessage("Ready")
         self._update_banner: Optional[UpdateBanner] = None
@@ -3142,6 +3181,14 @@ class MainWindow(QMainWindow):
         self.completed_card = StatCard("Done")
         self.pending_card = StatCard("Pending")
         self.progress_card = StatCard("Progress")
+        self.total_tasks_card.setToolTip("Show all tasks")
+        self.completed_card.setToolTip("Show completed tasks")
+        self.pending_card.setToolTip("Show pending tasks")
+        self.progress_card.setToolTip("Project completion percentage")
+        self.progress_card.setCursor(Qt.CursorShape.ArrowCursor)
+        self.total_tasks_card.clicked.connect(lambda: self._set_task_status_filter("all"))
+        self.completed_card.clicked.connect(lambda: self._set_task_status_filter("done"))
+        self.pending_card.clicked.connect(lambda: self._set_task_status_filter("pending"))
         for card, width in [
             (self.total_tasks_card, 72),
             (self.completed_card, 66),
@@ -3150,6 +3197,7 @@ class MainWindow(QMainWindow):
         ]:
             card.setFixedWidth(width)
             right_layout.addWidget(card)
+        self._refresh_task_status_cards()
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.VLine)
@@ -3205,23 +3253,23 @@ class MainWindow(QMainWindow):
                 btn.setToolTip(tip)
             return btn
 
-        self.notes_btn = _toolbar_btn("📝 Notes", 96, "Open job progress notes")
+        self.notes_btn = _toolbar_btn("Notes", 76, "Open job progress notes")
         self.notes_btn.clicked.connect(self._open_notes)
         top_row.addWidget(self.notes_btn)
 
-        self.co_btn = _toolbar_btn("🚀 CO Log", 108, "Open change order log")
+        self.co_btn = _toolbar_btn("CO Log", 84, "Open change order log")
         self.co_btn.clicked.connect(self._open_change_orders)
         top_row.addWidget(self.co_btn)
 
-        self.project_info_btn = _toolbar_btn("ℹ️ Info", 86, "View all project details")
+        self.project_info_btn = _toolbar_btn("Info", 64, "View all project details")
         self.project_info_btn.clicked.connect(self._show_project_info)
         top_row.addWidget(self.project_info_btn)
 
-        self.financials_btn = _toolbar_btn("💰 Financials", 122, "View financial data from ODIN")
+        self.financials_btn = _toolbar_btn("Financials", 100, "View financial data from ODIN")
         self.financials_btn.clicked.connect(self._open_financials)
         top_row.addWidget(self.financials_btn)
 
-        self.activity_log_btn = _toolbar_btn("📜 Activity", 106, "View activity log for this project")
+        self.activity_log_btn = _toolbar_btn("Activity", 90, "View activity log for this project")
         self.activity_log_btn.clicked.connect(self._open_activity_log)
         top_row.addWidget(self.activity_log_btn)
 
@@ -3231,22 +3279,41 @@ class MainWindow(QMainWindow):
         self.add_task_btn.clicked.connect(self.add_task)
         top_row.addWidget(self.add_task_btn)
 
-        self.template_apply_combo = QComboBox()
-        self.template_apply_combo.addItem("Templates")
-        self.template_apply_combo.addItem("Standard", "standard")
-        self.template_apply_combo.addItem("Phoenix", "phoenix")
-        self.template_apply_combo.setFixedWidth(110)
-        self.template_apply_combo.setSizePolicy(_fixed_sp)
-        self.template_apply_combo.activated.connect(self._apply_template_from_combo)
-        top_row.addWidget(self.template_apply_combo)
+        self.task_tools_btn = QToolButton()
+        self.task_tools_btn.setText("Tools")
+        self.task_tools_btn.setObjectName("taskToolsButton")
+        self.task_tools_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.task_tools_btn.setToolTip("Task tools")
+        self.task_tools_btn.setFixedWidth(78)
+        self.task_tools_btn.setMinimumHeight(36)
+        self.task_tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.task_tools_btn.setSizePolicy(_fixed_sp)
+        task_tools_menu = QMenu(self.task_tools_btn)
 
-        self.bulk_complete_btn = _toolbar_btn("✓ All", 66, "Mark all visible tasks complete")
-        self.bulk_complete_btn.clicked.connect(self._bulk_complete_tasks)
-        top_row.addWidget(self.bulk_complete_btn)
+        self.standard_template_action = QAction("Apply Standard Template", self)
+        self.standard_template_action.triggered.connect(
+            lambda: self._apply_task_template("standard", "Standard")
+        )
+        task_tools_menu.addAction(self.standard_template_action)
 
-        self.bulk_uncomplete_btn = _toolbar_btn("✗ All", 66, "Mark all visible tasks incomplete")
-        self.bulk_uncomplete_btn.clicked.connect(self._bulk_uncomplete_tasks)
-        top_row.addWidget(self.bulk_uncomplete_btn)
+        self.phoenix_template_action = QAction("Apply Phoenix Template", self)
+        self.phoenix_template_action.triggered.connect(
+            lambda: self._apply_task_template("phoenix", "Phoenix")
+        )
+        task_tools_menu.addAction(self.phoenix_template_action)
+
+        task_tools_menu.addSeparator()
+
+        self.bulk_complete_action = QAction("Mark Visible Complete", self)
+        self.bulk_complete_action.triggered.connect(self._bulk_complete_tasks)
+        task_tools_menu.addAction(self.bulk_complete_action)
+
+        self.bulk_uncomplete_action = QAction("Mark Visible Incomplete", self)
+        self.bulk_uncomplete_action.triggered.connect(self._bulk_uncomplete_tasks)
+        task_tools_menu.addAction(self.bulk_uncomplete_action)
+
+        self.task_tools_btn.setMenu(task_tools_menu)
+        top_row.addWidget(self.task_tools_btn)
 
         wrapper_layout.addLayout(top_row)
 
@@ -3257,9 +3324,11 @@ class MainWindow(QMainWindow):
         self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.task_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.task_table.verticalHeader().setVisible(False)
-        self.task_table.verticalHeader().setDefaultSectionSize(36)
+        self.task_table.verticalHeader().setDefaultSectionSize(40)
         self.task_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
-        self.task_table.setAlternatingRowColors(False)
+        self.task_table.setAlternatingRowColors(True)
+        self.task_table.setShowGrid(False)
+        self.task_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         _vp = _WatermarkViewport(_resource_path("PTT_Transparent.png"))
@@ -3343,25 +3412,18 @@ class MainWindow(QMainWindow):
         )
         dlg.exec()
 
-    def _apply_template_from_combo(self, index: int) -> None:
+    def _apply_task_template(self, template: str, template_name: str) -> None:
         if self._current_user_view_only():
-            self.template_apply_combo.setCurrentIndex(0)
             return
-        if index == 0:
-            return  # "Templates" header selected — do nothing
         if self.current_project_id is None:
             QMessageBox.information(self, "No project selected", "Select a project first.")
-            self.template_apply_combo.setCurrentIndex(0)
             return
-        template = self.template_apply_combo.itemData(index)
-        template_name = self.template_apply_combo.itemText(index)
         confirm = QMessageBox.question(
             self,
             "Replace tasks?",
             f"This will delete ALL current tasks and replace them with the {template_name} template.\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        self.template_apply_combo.setCurrentIndex(0)
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self.backend.replace_project_tasks(self.current_project_id, template)
@@ -3501,6 +3563,65 @@ class MainWindow(QMainWindow):
             return folder / "project_tracker_data.json"
         return _app_data_path()
 
+    @staticmethod
+    def _collect_startup_self_check(data_path: Path) -> list[str]:
+        warnings: list[str] = []
+        data_dir = data_path.parent
+
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StartupCheckError(f"Data folder could not be created:\n{data_dir}\n\n{exc}") from exc
+
+        probe = data_dir / ".project_tracker_write_test.tmp"
+        try:
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except OSError as exc:
+            raise StartupCheckError(f"Data folder is not writable:\n{data_dir}\n\n{exc}") from exc
+
+        if data_path.exists():
+            try:
+                data = json.loads(data_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    raise ValueError("top-level JSON value is not an object")
+                missing = [key for key in ("projects", "tasks") if key not in data]
+                if missing:
+                    warnings.append(
+                        f"Data file is missing expected section(s): {', '.join(missing)}"
+                    )
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise StartupCheckError(f"Data file could not be read:\n{data_path}\n\n{exc}") from exc
+
+        for asset_name in ("PTT_Normal.ico", "PTT_Transparent.png"):
+            asset_path = _resource_path(asset_name)
+            if not asset_path.exists():
+                warnings.append(f"Bundled asset is missing: {asset_name}")
+
+        if getattr(sys, "frozen", False):
+            install_dir = Path(sys.executable).resolve().parent
+            probe = install_dir / ".project_tracker_update_test.tmp"
+            try:
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+            except OSError:
+                warnings.append(
+                    "The install folder is not writable, so automatic updates may fail:\n"
+                    f"{install_dir}"
+                )
+
+        return warnings
+
+    def _show_startup_self_check_warnings(self) -> None:
+        if not self._startup_self_check_warnings:
+            return
+        QMessageBox.warning(
+            self,
+            "Startup Check Warning",
+            "The app started, but these items need attention:\n\n"
+            + "\n\n".join(self._startup_self_check_warnings),
+        )
+
     def _open_data_location_settings(self) -> None:
         settings = QSettings("ATSInc", "ProjectTrackingTool")
         current_folder = str(settings.value("dataFolder", "")).strip()
@@ -3550,6 +3671,147 @@ class MainWindow(QMainWindow):
         self.backend.current_user = self._current_user
         self._start_file_watcher()
         self.refresh_project_list()
+
+    @staticmethod
+    def _backup_preview_text(path: Path) -> str:
+        stat = path.stat()
+        modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %I:%M %p")
+        size_kb = max(1, round(stat.st_size / 1024))
+        lines = [
+            f"File: {path.name}",
+            f"Modified: {modified}",
+            f"Size: {size_kb:,} KB",
+            "",
+        ]
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            lines.extend([
+                f"Projects: {len(data.get('projects', []))}",
+                f"Tasks: {len(data.get('tasks', []))}",
+                f"Notes: {len(data.get('notes', []))}",
+                f"Change Orders: {len(data.get('change_orders', []))}",
+                f"Address Book Entries: {len(data.get('address_book', []))}",
+            ])
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            lines.append(f"Preview unavailable: {exc}")
+        return "\n".join(lines)
+
+    def _open_restore_backup(self) -> None:
+        if not self._current_user_is_admin():
+            QMessageBox.warning(self, "Access Denied", "Only administrators can restore backups.")
+            return
+
+        data_path = self.backend.db_path
+        backup_dir = data_path.parent / "backups"
+        backups = sorted(
+            backup_dir.glob("project_tracker_data_*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        ) if backup_dir.exists() else []
+
+        if not backups:
+            QMessageBox.information(
+                self,
+                "No Backups Found",
+                f"No backups were found in:\n{backup_dir}",
+            )
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Restore Backup")
+        dlg.setModal(True)
+        dlg.resize(720, 440)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Restore Backup")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        note = QLabel(f"Current data file:\n{data_path}")
+        note.setObjectName("ProjectSubtitle")
+        note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(note)
+
+        body = QHBoxLayout()
+        backup_list = QListWidget()
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setObjectName("ReadOnlyNotes")
+
+        for backup in backups:
+            stat = backup.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %I:%M %p")
+            size_kb = max(1, round(stat.st_size / 1024))
+            item = QListWidgetItem(f"{modified}    {size_kb:,} KB    {backup.name}")
+            item.setData(Qt.ItemDataRole.UserRole, str(backup))
+            backup_list.addItem(item)
+
+        def update_preview() -> None:
+            item = backup_list.currentItem()
+            if item is None:
+                preview.clear()
+                return
+            preview.setPlainText(self._backup_preview_text(Path(item.data(Qt.ItemDataRole.UserRole))))
+
+        backup_list.currentRowChanged.connect(lambda _row: update_preview())
+        backup_list.setCurrentRow(0)
+
+        body.addWidget(backup_list, 2)
+        body.addWidget(preview, 1)
+        layout.addLayout(body, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        restore_btn = buttons.addButton("Restore Selected", QDialogButtonBox.ButtonRole.AcceptRole)
+        if restore_btn is not None:
+            restore_btn.setObjectName("InstallBtn")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = backup_list.currentItem()
+        if selected is None:
+            return
+        backup_path = Path(selected.data(Qt.ItemDataRole.UserRole))
+        try:
+            data = json.loads(backup_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or "projects" not in data or "tasks" not in data:
+                raise ValueError("backup does not look like a Project Tracking Tool data file")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self, "Restore Failed", f"Backup could not be read:\n{exc}")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Confirm Restore",
+            "This will replace the current project data with the selected backup.\n\n"
+            "A fresh backup of the current data will be created first.\n\n"
+            f"Restore from:\n{backup_path}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            _backup_data_file(data_path)
+            shutil.copy2(backup_path, data_path)
+            self._reload_backend()
+        except OSError as exc:
+            QMessageBox.critical(self, "Restore Failed", f"Could not restore backup:\n{exc}")
+            return
+
+        self.status_bar.showMessage(f"Restored backup {backup_path.name}", 5000)
+        QMessageBox.information(
+            self,
+            "Backup Restored",
+            "The selected backup has been restored and the project list has been reloaded.",
+        )
 
     # ── Financials ─────────────────────────────────────────────────────── #
 
@@ -3775,7 +4037,36 @@ class MainWindow(QMainWindow):
         self._update_banner = banner
         self.statusBar().addPermanentWidget(banner, 1)
         banner.show()
+        self._version_status_lbl.setText(f"v{info.current_version} -> v{info.latest_version}")
+        self._version_status_lbl.setToolTip(f"Update available: v{info.latest_version}")
         self.status_bar.showMessage(f"Update available: v{info.latest_version}", 0)
+
+    def _check_for_updates_now(self) -> None:
+        self.status_bar.showMessage("Checking for updates...", 2000)
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        try:
+            info = check_for_update()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if info:
+            self._pending_update_info = info
+            self._show_update_banner()
+            QMessageBox.information(
+                self,
+                "Update Available",
+                f"Version {info.latest_version} is available.\n\nUse the update banner to install it.",
+            )
+            return
+
+        self._version_status_lbl.setText(f"v{self._app_version}")
+        self._version_status_lbl.setToolTip("Current installed version")
+        QMessageBox.information(
+            self,
+            "No Update Available",
+            f"You're running v{self._app_version}. No newer release was found.",
+        )
+        self.status_bar.showMessage("No update available", 4000)
 
     def _do_install(self, info: UpdateInfo) -> None:
         progress = QProgressDialog("Downloading update…", "Cancel", 0, 100, self)
@@ -3793,7 +4084,13 @@ class MainWindow(QMainWindow):
             download_and_apply(info, progress_callback=on_progress)
         except RuntimeError as exc:
             progress.close()
-            QMessageBox.critical(self, "Update failed", str(exc))
+            QMessageBox.critical(
+                self,
+                "Update Failed",
+                f"{exc}\n\n"
+                "You can install manually from:\n"
+                f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest",
+            )
 
     # ── Menu ───────────────────────────────────────────────────────────────────
 
@@ -3919,10 +4216,14 @@ class MainWindow(QMainWindow):
         self.pin_project_btn.setEnabled(True)
         self.pin_project_btn.setToolTip("Pin this project to the top of the list")
         self.task_table.setDragEnabled(True)
-        self.bulk_complete_btn.setEnabled(True)
-        self.bulk_complete_btn.setToolTip("Mark all visible tasks complete")
-        self.bulk_uncomplete_btn.setEnabled(True)
-        self.bulk_uncomplete_btn.setToolTip("Mark all visible tasks incomplete")
+        self.bulk_complete_action.setEnabled(True)
+        self.bulk_complete_action.setToolTip("Mark all visible tasks complete")
+        self.bulk_uncomplete_action.setEnabled(True)
+        self.bulk_uncomplete_action.setToolTip("Mark all visible tasks incomplete")
+        self.standard_template_action.setEnabled(True)
+        self.phoenix_template_action.setEnabled(True)
+        self.task_tools_btn.setEnabled(True)
+        self.task_tools_btn.setToolTip("Task tools")
         self.import_btn.setEnabled(True)
         self.import_email_btn.setEnabled(True)
         self.import_email_btn.setToolTip("Import project from Odin assignment email (.eml)")
@@ -3933,7 +4234,6 @@ class MainWindow(QMainWindow):
         self.co_btn.setToolTip("Open change order log")
         self.activity_log_btn.setEnabled(True)
         self.activity_log_btn.setToolTip("View activity log for this project")
-        self.template_apply_combo.setEnabled(True)
         self._new_project_action.setEnabled(True)
         self._import_action.setEnabled(True)
 
@@ -3959,6 +4259,7 @@ class MainWindow(QMainWindow):
         # Hide write actions from view-only users
         self._new_project_action.setVisible(logged_in and not view_only)
         self._import_action.setVisible(logged_in and not view_only)
+        self._restore_backup_action.setVisible(logged_in and self._current_user_is_admin())
 
     def _open_manage_users(self) -> None:
         if not self._current_user_is_admin():
@@ -4005,16 +4306,21 @@ class MainWindow(QMainWindow):
         for btn in (
             self.new_project_btn, self.edit_project_btn, self.delete_project_btn,
             self.pin_project_btn, self.import_btn, self.import_email_btn, self.add_task_btn,
-            self.notes_btn, self.co_btn, self.template_apply_combo,
+            self.notes_btn, self.co_btn, self.task_tools_btn,
         ):
             btn.setEnabled(False)
             btn.setToolTip(tip)
         self._new_project_action.setEnabled(False)
         self._import_action.setEnabled(False)
         self.task_table.setDragEnabled(False)
-        for btn in (self.bulk_complete_btn, self.bulk_uncomplete_btn):
-            btn.setEnabled(False)
-            btn.setToolTip(tip)
+        for action in (
+            self.bulk_complete_action,
+            self.bulk_uncomplete_action,
+            self.standard_template_action,
+            self.phoenix_template_action,
+        ):
+            action.setEnabled(False)
+            action.setToolTip(tip)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -4047,6 +4353,9 @@ class MainWindow(QMainWindow):
         self._data_location_action = QAction("Data Location...", self)
         self._data_location_action.triggered.connect(self._open_data_location_settings)
 
+        self._restore_backup_action = QAction("Restore Backup...", self)
+        self._restore_backup_action.triggered.connect(self._open_restore_backup)
+
         self._financials_action = QAction("Financial Data File...", self)
         self._financials_action.triggered.connect(self._open_financials_file_settings)
 
@@ -4072,6 +4381,7 @@ class MainWindow(QMainWindow):
             self.export_menu_action,
             self.bulk_export_excel_action,
             self._data_location_action,
+            self._restore_backup_action,
             self._financials_action,
             self._compact_view_action,
         ]
@@ -4085,7 +4395,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.bulk_export_excel_action)
         file_menu.addSeparator()
         file_menu.addAction(self._data_location_action)
+        file_menu.addAction(self._restore_backup_action)
         file_menu.addAction(self._financials_action)
+        file_menu.addAction(self._compact_view_action)
         file_menu.addAction(self._manage_users_action_ref)
         file_menu.addAction(self._change_pw_action)
         file_menu.addAction(self._logout_action)
@@ -4105,6 +4417,10 @@ class MainWindow(QMainWindow):
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu("Help")
+
+        check_updates_action = QAction("Check for Updates", self)
+        check_updates_action.triggered.connect(self._check_for_updates_now)
+        help_menu.addAction(check_updates_action)
 
         version_history_action = QAction("Version History && Recent Updates", self)
         version_history_action.triggered.connect(self._show_version_history)
@@ -4233,11 +4549,19 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         from version import __version__
+        info: Optional[UpdateInfo] = getattr(self, "_pending_update_info", None)
+        update_line = (
+            f"Latest available: v{info.latest_version}\n"
+            if info is not None else
+            "Latest available: use Help > Check for Updates\n"
+        )
         QMessageBox.information(
             self,
             "About Project Tracking Tool",
             f"Project Tracking Tool\n"
             f"Version {__version__}\n\n"
+            f"{update_line}"
+            f"Releases:\nhttps://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases\n\n"
             f"Built for the ATS team.\n"
             f"© 2026 Justin Glave\n\n"
             f"Log file:\n{_LOG_PATH}",
@@ -4510,6 +4834,7 @@ class MainWindow(QMainWindow):
         self.pending_card.set_value("0")
         self.progress_card.set_value("0%")
         self.progress_bar.clear()
+        self._refresh_task_status_cards()
         self.current_tasks = []
         self.task_table.setRowCount(0)
         self.export_menu_action.setEnabled(False)
@@ -4553,9 +4878,34 @@ class MainWindow(QMainWindow):
 
         # Sync the in-memory task list so sort/filter stays accurate
         self.current_tasks = self.backend.list_tasks(self.current_project_id)
+        self._refresh_task_status_cards()
+
+    def _set_task_status_filter(self, status: str) -> None:
+        if status not in {"all", "done", "pending"}:
+            status = "all"
+        self._task_status_filter = status
+        self._refresh_task_status_cards()
+        self.populate_tasks()
+        labels = {
+            "all": "Showing all tasks",
+            "done": "Showing completed tasks",
+            "pending": "Showing pending tasks",
+        }
+        self.status_bar.showMessage(labels[status], 3000)
+
+    def _refresh_task_status_cards(self) -> None:
+        if not all(hasattr(self, name) for name in ("total_tasks_card", "completed_card", "pending_card")):
+            return
+        self.total_tasks_card.set_active(self._task_status_filter == "all")
+        self.completed_card.set_active(self._task_status_filter == "done")
+        self.pending_card.set_active(self._task_status_filter == "pending")
 
     def populate_tasks(self) -> None:
         filtered_tasks = list(self.current_tasks)
+        if self._task_status_filter == "done":
+            filtered_tasks = [task for task in filtered_tasks if task.is_complete]
+        elif self._task_status_filter == "pending":
+            filtered_tasks = [task for task in filtered_tasks if not task.is_complete]
 
         col_keys = {
             0: lambda t: (0 if t.is_complete else 1),
@@ -4584,19 +4934,27 @@ class MainWindow(QMainWindow):
                         lambda checked, task_id=task.id: self.toggle_task(int(task_id), bool(checked))
                     )
                 self.task_table.setCellWidget(row_index, 0, self._centered_widget(checkbox))
-                self.task_table.setItem(row_index, 1, QTableWidgetItem(task.task_name))
+                task_item = QTableWidgetItem(task.task_name)
+                task_item.setToolTip(task.task_name)
+                self.task_table.setItem(row_index, 1, task_item)
 
                 phase_item = QTableWidgetItem(task.phase)
-                phase_item.setForeground(QColor(PHASE_COLORS.get(task.phase, "#64748b")))
+                phase_item.setToolTip(task.phase)
                 self.task_table.setItem(row_index, 2, phase_item)
 
-                self.task_table.setItem(row_index, 3, QTableWidgetItem(task.completed_date or ""))
-                self.task_table.setItem(row_index, 4, QTableWidgetItem(task.notes or ""))
+                completed_item = QTableWidgetItem(task.completed_date or "")
+                completed_item.setToolTip(task.completed_date or "")
+                self.task_table.setItem(row_index, 3, completed_item)
+
+                notes_item = QTableWidgetItem(task.notes or "")
+                notes_item.setToolTip(task.notes or "")
+                self.task_table.setItem(row_index, 4, notes_item)
 
                 for column_index in range(1, 5):
                     item = self.task_table.item(row_index, column_index)
                     if item is not None:
                         item.setData(Qt.ItemDataRole.UserRole, task.id)
+                        item.setForeground(QColor("#9ca3af" if task.is_complete else "#e5e7eb"))
 
         finally:
             self._populating = False
@@ -5085,7 +5443,7 @@ class MainWindow(QMainWindow):
         self._compact_mode = not self._compact_mode if checked is None else bool(checked)
         if hasattr(self, "_compact_view_action"):
             self._compact_view_action.setChecked(self._compact_mode)
-        row_height = 24 if self._compact_mode else 36
+        row_height = 28 if self._compact_mode else 40
         self.task_table.verticalHeader().setDefaultSectionSize(row_height)
         # Resize all existing rows
         for row_index in range(self.task_table.rowCount()):
@@ -5114,6 +5472,9 @@ QPushButton:focus { outline: none; border: 2px solid #3b82f6; }
 QPushButton:disabled, QToolButton:disabled { background-color: #4b5563; color: #6b7280; }
 QPushButton#secondaryButton { background-color: #1e3a8a; }
 QPushButton#secondaryButton:hover { background-color: #1e40af; }
+QToolButton#taskToolsButton { background-color: #16213d; color: #dbeafe; border: 1px solid #2d5a8e; border-radius: 6px; padding: 6px 12px; font-weight: 600; font-size: 11pt; }
+QToolButton#taskToolsButton:hover { background-color: #1e3a5f; border-color: #3b82f6; }
+QToolButton#taskToolsButton::menu-indicator { image: none; width: 0px; }
 QPushButton#tertiaryButton { background-color: transparent; border: 1px solid #4b5563; color: #3b82f6; }
 QPushButton#tertiaryButton:hover { background-color: #1f2937; border: 1px solid #3b82f6; }
 QLineEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; selection-background-color: #3b82f6; }
@@ -5148,12 +5509,12 @@ QTabWidget::pane { border: 1px solid #2d3748; background-color: #141829; }
 QTabBar::tab { background-color: #050810; color: #9ca3af; padding: 6px 18px; border: 1px solid #2d3748; border-bottom: none; border-radius: 6px 6px 0 0; font-weight: 500; }
 QTabBar::tab:selected { background-color: #141829; color: #ffffff; font-weight: 600; border-bottom: 3px solid #dc2626; }
 QTabBar::tab:hover:!selected { background-color: #1f2937; color: #d1d5db; }
-QTableWidget, QTableView { background-color: transparent; alternate-background-color: rgba(10, 14, 39, 140); gridline-color: #2d3748; border: 1px solid #2d3748; border-radius: 6px; color: #ffffff; }
-QTableWidget::item, QTableView::item { background-color: rgba(20, 24, 41, 140); padding: 3px 6px; border: none; color: #ffffff; }
-QTableWidget::item:alternate, QTableView::item:alternate { background-color: rgba(10, 14, 39, 140); }
-QTableWidget::item:selected, QTableView::item:selected { background-color: #1e40af; color: #ffffff; }
-QTableWidget::item:hover, QTableView::item:hover { background-color: #1f2937; }
-QHeaderView::section { background-color: rgba(5, 8, 16, 180); color: #e5e7eb; padding: 6px 8px; border: none; border-right: 1px solid #2d3748; border-bottom: 1px solid #2d3748; font-weight: 600; }
+QTableWidget, QTableView { background-color: transparent; alternate-background-color: rgba(15, 23, 42, 120); gridline-color: rgba(45, 55, 72, 90); border: 1px solid #2d3748; border-radius: 6px; color: #ffffff; }
+QTableWidget::item, QTableView::item { background-color: rgba(20, 24, 41, 115); padding: 6px 8px; border: none; color: #e5e7eb; }
+QTableWidget::item:alternate, QTableView::item:alternate { background-color: rgba(10, 14, 39, 95); }
+QTableWidget::item:selected, QTableView::item:selected { background-color: #2563eb; color: #ffffff; }
+QTableWidget::item:hover, QTableView::item:hover { background-color: rgba(30, 64, 175, 120); }
+QHeaderView::section { background-color: rgba(5, 8, 16, 180); color: #e5e7eb; padding: 7px 8px; border: none; border-right: 1px solid rgba(45, 55, 72, 130); border-bottom: 1px solid #2d3748; font-weight: 600; }
 QHeaderView::section:hover { background-color: #1f2937; }
 QListWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 8px; color: #ffffff; }
 QListWidget::item { background: transparent; border-radius: 6px; padding: 8px; margin: 2px 0; color: #ffffff; }
@@ -5183,7 +5544,10 @@ QToolTip { background-color: #141829; color: #ffffff; border: 1px solid #2d3748;
 QStatusBar { background-color: #050810; color: #d1d5db; border-top: 1px solid #2d3748; padding: 2px 12px; }
 QProgressBar { border: 1px solid #2d3748; border-radius: 6px; background-color: #050810; text-align: center; color: #ffffff; }
 QProgressBar::chunk { background-color: #dc2626; border-radius: 4px; }
-#Panel, #StatCard { background: rgba(20, 24, 41, 180); border: 1px solid #2d3748; border-radius: 14px; }
+#Panel, #StatCard { background: rgba(20, 24, 41, 170); border: 1px solid #2d3748; border-radius: 8px; }
+#StatCard:hover { border-color: #3b82f6; background: rgba(30, 41, 59, 180); }
+#StatCard[active="true"] { border-color: #60a5fa; background: rgba(30, 58, 138, 180); }
+QLabel#VersionStatus { color: #93c5fd; font-weight: 600; padding: 0px 8px; }
 #UpdateBanner { background: rgba(30, 58, 138, 220); border-top: 1px solid #3b82f6; }
 QLabel#UpdateMsg { color: #93c5fd; font-weight: 600; }
 #InstallBtn { background: #dc2626; border: 1px solid #ef4444; color: white; font-weight: 700; }
@@ -5781,7 +6145,11 @@ def main() -> int:
     # Auto-backup on open (keep last 10 backups)
     _backup_data_file(_app_data_path())
 
-    window = MainWindow(current_user=current_user)
+    try:
+        window = MainWindow(current_user=current_user)
+    except StartupCheckError as exc:
+        QMessageBox.critical(None, "Startup Check Failed", str(exc))
+        return 1
     window.showMaximized()
 
     if settings.value("showWelcome", True, type=bool):

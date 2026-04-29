@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.1**
+**Current Version: v1.8.2**
 
 ---
 
@@ -16,7 +16,7 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Pin projects** to the top of the list with a 📌 indicator
 - **Address Book** — shared contact directory; admins and standard users can add or edit entries; deletions require admin approval
 - **Drag to reorder tasks** within a project
-- **Compact task view** — toggle a condensed row layout from the View menu to see more tasks at once
+- **Compact task view** — toggle a condensed row layout from the File or View menu to see more tasks at once
 - **Bulk complete / uncomplete** — mark all tasks in the selected project done or undone in one click (with confirmation)
 - **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
 - **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
@@ -31,8 +31,19 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Shared database** — point all users to a shared folder (SharePoint / OneDrive) so everyone works from the same data in real time
 - Export a single project to Excel or JSON snapshot
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
-- Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder
-- Auto-updates — when a new version is released, the app notifies you and installs it with one click
+- Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder, with admin restore available from the File menu
+- Auto-updates — when a new version is released, the app notifies you and installs the full app package with one click
+
+---
+
+## What's New in v1.8.2
+
+- Auto-updater now installs the full PyInstaller app folder, including `_internal` runtime files, instead of replacing only the exe
+- Added **File → Restore Backup...** for admin-controlled restore from automatic backups
+- Added startup self-checks for data-file readability, writable folders, bundled assets, and update permissions
+- Added release/build sanity checks before packaging, including version sync, compile checks, tests, and updater zip validation
+- Improved update UX with manual update checking, clearer release notes, status-bar version display, and better failure guidance
+- Polished the task workspace with cleaner toolbar actions, task summary quick filters, softer progress/table styling, and better row readability
 
 ---
 
@@ -86,8 +97,8 @@ No Python or other software required.
 If you selected the wrong template when creating a job, you can reset it:
 
 1. Select the job in the sidebar
-2. In the task bar, click the **Templates** dropdown
-3. Choose **Standard** or **Phoenix**
+2. In the task bar, click **Tools**
+3. Choose **Apply Standard Template** or **Apply Phoenix Template**
 4. Confirm the prompt — all current tasks will be replaced with the selected template
 
 > **Note:** This replaces all tasks. Any completed tasks or custom tasks will be lost.
@@ -140,7 +151,7 @@ Click **📌 Pin** (bottom of the sidebar) to pin the selected project to the to
 
 ### Adding Notes
 
-1. With a job selected, click **📝 Notes** in the task bar
+1. With a job selected, click **Notes** in the task bar
 2. Click **+ Add Note** to create a new note with a date and content
 3. Notes can be marked **Open** or **Closed** and include a closeout comment
 4. Double-click any note row to edit it
@@ -149,7 +160,7 @@ Click **📌 Pin** (bottom of the sidebar) to pin the selected project to the to
 
 Attach CSV or Excel data files to a job and view them directly inside the app:
 
-1. With a job selected, click **📝 Notes** to open the Notes window
+1. With a job selected, click **Notes** to open the Notes window
 2. Click **Attach RSS** to browse for a CSV (`.csv`) or Excel (`.xlsx` / `.xlsm`) file
 3. A preview of the file's contents is shown — give the table a name, then click **Confirm**
 4. If a feed already exists on the job, choose **Replace All** to overwrite or **Add New** to keep both
@@ -166,14 +177,14 @@ Attach CSV or Excel data files to a job and view them directly inside the app:
 
 ### Adding Change Orders
 
-1. With a job selected, click **🚀 CO Log** in the task bar
+1. With a job selected, click **CO Log** in the task bar
 2. Click **+ Add CO** to enter a new change order
 3. Fields include COP#, description, ATS pricing, sub pricing, and status tracking
 4. The summary bar at the top shows running totals for ATS and Sub contracts
 
 ### Viewing All Project Details
 
-Click **ℹ️ Info** in the task bar to open a popup showing every field entered for the job — owner, contractor, contract value, warranty, Div25 URL, and more.
+Click **Info** in the task bar to open a popup showing every field entered for the job — owner, contractor, contract value, warranty, Div25 URL, and more.
 
 ### Viewing the Financials Dashboard
 
@@ -206,7 +217,7 @@ Click **📖 Address Book** in the sidebar to open the shared contact directory.
 
 ### Viewing the Activity Log
 
-Click **📜 Activity** in the task bar to open the activity log for the selected project. Every task creation, edit, completion, and deletion is recorded with a timestamp and the user who made the change.
+Click **Activity** in the task bar to open the activity log for the selected project. Every task creation, edit, completion, and deletion is recorded with a timestamp and the user who made the change.
 
 - **Admin users** see a **Remove** button on each row to delete individual log entries (with confirmation)
 
@@ -243,6 +254,20 @@ All users can share a single database by pointing the app at a synced folder (Sh
 6. Repeat steps 3–5 on every user's machine, pointing to their local copy of the same synced folder
 
 > **Note:** The app automatically retries saves if OneDrive briefly locks the data file during sync. Conflicts are rare on a small team but can occur if two users save simultaneously.
+
+### Restoring From Backup
+
+The app creates an automatic backup of the project data file on open and keeps the 10 newest backups.
+
+Admins can restore one of these backups:
+
+1. Go to **File → Restore Backup...**
+2. Select a backup from the list
+3. Review the preview counts and modified date
+4. Click **Restore Selected**
+5. Confirm the restore
+
+Before restoring, the app creates one more backup of the current data file so the restore can be reversed manually if needed.
 
 ### User Accounts and Roles
 
@@ -303,7 +328,7 @@ PTT_Transparent.png          — Watermark image
 3. Run `build.bat` — this produces:
    - `dist\ProjectTrackingTool\ProjectTrackingTool.exe` — test this first
    - `dist\ProjectTrackingToolSetup.exe` — installer for new users
-   - `dist\ProjectTrackingTool.zip` — exe only, used by the auto-updater
+   - `dist\ProjectTrackingTool.zip` — full one-folder app payload used by the auto-updater
    - `dist\ProjectTrackingTool_FullInstall.zip` — full folder, for manual installs
 4. Test the exe and the installer
 5. Push changes to GitHub:
@@ -318,10 +343,10 @@ PTT_Transparent.png          — Watermark image
    ```
 7. Upload the release assets:
    ```
-   gh release upload v1.x.x dist/ProjectTrackingToolSetup.exe dist/ProjectTrackingTool.zip
+   gh release upload v1.x.x dist/ProjectTrackingToolSetup.exe dist/ProjectTrackingTool.zip dist/ProjectTrackingTool_FullInstall.zip
    ```
 
-Users will see an update banner in the app automatically on next launch. The banner downloads `ProjectTrackingTool.zip` and replaces the exe in-place.
+Users will see an update banner in the app automatically on next launch. The banner downloads `ProjectTrackingTool.zip` and replaces the installed app files in-place after the running app exits.
 
 ---
 

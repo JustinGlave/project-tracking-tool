@@ -10,9 +10,11 @@ How it works
    a banner with an "Install & Restart" button.
 4. When the user clicks the button, download_and_apply() is called:
       a. Downloads the auto-updater .zip to a temp file.
-      b. Writes a tiny .bat script that waits for this process to exit,
-         extracts the bundled exe over the installed exe, then relaunches it.
-      c. Launches the .bat and calls sys.exit() — Windows takes it from there.
+      b. Validates that the zip contains the full PyInstaller one-folder app.
+      c. Writes a small PowerShell updater plus a .bat wrapper that waits for
+         this process to exit, extracts the whole app folder over the install
+         folder, then relaunches it.
+      d. Launches the .bat and calls sys.exit() — Windows takes it from there.
 
 Configuration
 -------------
@@ -30,6 +32,7 @@ import urllib.request
 import urllib.error
 import json
 import logging
+import zipfile
 from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
@@ -55,6 +58,10 @@ class UpdateInfo:
     latest_version:  str
     download_url:    str
     release_notes:   str
+
+
+class UpdatePackageError(RuntimeError):
+    """Raised when the downloaded update package is missing required files."""
 
 
 def _parse_version(tag: str) -> tuple[int, ...]:
@@ -122,6 +129,122 @@ def check_for_update() -> Optional[UpdateInfo]:
         return None
 
 
+def _validate_update_zip(zip_path: Path) -> None:
+    """Ensure the updater package contains a full one-folder PyInstaller build."""
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            names = {name.replace("\\", "/").lstrip("/") for name in zf.namelist()}
+    except zipfile.BadZipFile as exc:
+        raise UpdatePackageError(
+            "The downloaded update package is not a valid zip file.\n"
+            "Please download the installer manually from GitHub."
+        ) from exc
+
+    flat_exe = "ProjectTrackingTool.exe"
+    nested_exe = "ProjectTrackingTool/ProjectTrackingTool.exe"
+    has_exe = flat_exe in names or nested_exe in names
+    has_internal = any(
+        name.startswith("_internal/") or name.startswith("ProjectTrackingTool/_internal/")
+        for name in names
+    )
+
+    if not has_exe:
+        raise UpdatePackageError(
+            "The downloaded update package does not contain ProjectTrackingTool.exe.\n"
+            "Please download the installer manually from GitHub."
+        )
+    if not has_internal:
+        raise UpdatePackageError(
+            "The downloaded update package is incomplete: the _internal runtime folder is missing.\n"
+            "Please download the installer manually from GitHub."
+        )
+
+
+def _ps_literal(value: Path | str) -> str:
+    """Return a PowerShell single-quoted string literal."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_update_powershell_script(zip_path: Path, install_dir: Path, exe_path: Path) -> str:
+    """Build the PowerShell script that performs the file replacement."""
+    return f"""$ErrorActionPreference = 'Stop'
+$zipPath = {_ps_literal(zip_path)}
+$installDir = {_ps_literal(install_dir)}
+$exePath = {_ps_literal(exe_path)}
+$logPath = Join-Path $env:TEMP 'ProjectTrackingTool_update.log'
+
+"Starting update from $zipPath" | Out-File -FilePath $logPath -Encoding utf8
+if (-not (Test-Path -LiteralPath $zipPath)) {{
+    throw "Update package was not found: $zipPath"
+}}
+if (-not (Test-Path -LiteralPath $installDir)) {{
+    throw "Install folder was not found: $installDir"
+}}
+
+$stage = Join-Path ([IO.Path]::GetTempPath()) ('ptt_update_' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+try {{
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $stage -Force
+    $payload = $stage
+    $nested = Join-Path $stage 'ProjectTrackingTool'
+    if (Test-Path -LiteralPath (Join-Path $nested 'ProjectTrackingTool.exe')) {{
+        $payload = $nested
+    }}
+
+    if (-not (Test-Path -LiteralPath (Join-Path $payload 'ProjectTrackingTool.exe'))) {{
+        throw "Update package did not contain ProjectTrackingTool.exe."
+    }}
+    if (-not (Test-Path -LiteralPath (Join-Path $payload '_internal'))) {{
+        throw "Update package did not contain the _internal runtime folder."
+    }}
+
+    Get-ChildItem -LiteralPath $payload -Force | Copy-Item -Destination $installDir -Recurse -Force
+
+    if (-not (Test-Path -LiteralPath $exePath)) {{
+        throw "Updated executable was not found after copy: $exePath"
+    }}
+
+    "Update files copied successfully." | Out-File -FilePath $logPath -Append -Encoding utf8
+}}
+finally {{
+    if (Test-Path -LiteralPath $stage) {{
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+    if (Test-Path -LiteralPath $zipPath) {{
+        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    }}
+}}
+"""
+
+
+def _build_update_batch(pid: int, ps_path: Path, exe_path: Path) -> str:
+    ps_str = str(ps_path)
+    exe_str = str(exe_path)
+    return f"""@echo off
+setlocal
+set "LOG=%TEMP%\\ProjectTrackingTool_update.log"
+echo Waiting for Project Tracking Tool to close... > "%LOG%"
+:wait
+tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto wait
+)
+powershell -NoProfile -ExecutionPolicy Bypass -File "{ps_str}" >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo Update failed. See "%LOG%" for details. >> "%LOG%"
+    start "" "{exe_str}"
+    del "{ps_str}" >nul 2>nul
+    del "%~f0"
+    exit /b 1
+)
+start "" "{exe_str}"
+del "{ps_str}" >nul 2>nul
+del "%~f0"
+"""
+
+
 def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     """
     Download the new zip, extract it over the current install, and restart.
@@ -135,10 +258,11 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
     if not getattr(sys, "frozen", False):
         raise RuntimeError(
             "Update can only be applied to a compiled build.\n"
-            "You're running from source — pull the latest code from GitHub instead."
+            "You're running from source, so use git pull/build locally or download the installer from GitHub."
         )
 
     current_exe = Path(sys.executable).resolve()
+    install_dir = current_exe.parent
 
     # Download zip to system temp
     tmp_fd, tmp_zip_str = tempfile.mkstemp(suffix=".zip")
@@ -180,31 +304,32 @@ def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
             logger.exception("Failed to remove incomplete update download: %s", tmp_zip)
         raise RuntimeError(f"Download failed: {exc}") from exc
 
-    # Write batch script that waits for this process to exit,
-    # extracts the zip over the install dir, then relaunches.
+    try:
+        _validate_update_zip(tmp_zip)
+    except RuntimeError:
+        try:
+            tmp_zip.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Failed to remove invalid update download: %s", tmp_zip)
+        raise
+
+    # Write scripts that wait for this process to exit, extract the full app
+    # folder over the install dir, then relaunch.
     pid = os.getpid()
+    ps_fd, ps_path_str = tempfile.mkstemp(suffix=".ps1")
     bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
+    ps_path = Path(ps_path_str)
     bat_path = Path(bat_path_str)
-    exe_str = str(current_exe)
-    zip_str = str(tmp_zip)
-    bat_content = f"""@echo off
-:wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto wait
-)
-powershell -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead('{zip_str}'); $entry = $zip.Entries | Where-Object {{ $_.Name -eq 'ProjectTrackingTool.exe' }} | Select-Object -First 1; if ($entry) {{ [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, '{exe_str}', $true) }}; $zip.Dispose()"
-del "{zip_str}"
-start "" "{exe_str}"
-del "%~f0"
-"""
-    with open(bat_fd, "w") as fh:
+
+    with open(ps_fd, "w", encoding="utf-8") as fh:
+        fh.write(_build_update_powershell_script(tmp_zip, install_dir, current_exe))
+    with open(bat_fd, "w", encoding="utf-8") as fh:
+        bat_content = _build_update_batch(pid, ps_path, current_exe)
         fh.write(bat_content)
 
     subprocess.Popen(
         ["cmd.exe", "/c", str(bat_path)],
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         close_fds=True,
     )
     sys.exit(0)
