@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.7.1**
+**Current Version: v1.8.0**
 
 ---
 
@@ -14,10 +14,10 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - Add notes and change orders to each job
 - **Role-based access** — Admin, User, and View Only roles with per-role restrictions
 - **Pin projects** to the top of the list with a 📌 indicator
-- **Address Book** — shared contact directory; any user can add or edit entries; deletions require approval from the designated approver account
+- **Address Book** — shared contact directory; admins and standard users can add or edit entries; deletions require admin approval
 - **Drag to reorder tasks** within a project
-- **Compact view** — toggle a condensed row layout to see more tasks at once
-- **Bulk complete / uncomplete** — mark all visible tasks done or undone in one click (with confirmation)
+- **Compact task view** — toggle a condensed row layout from the View menu to see more tasks at once
+- **Bulk complete / uncomplete** — mark all tasks in the selected project done or undone in one click (with confirmation)
 - **Activity log** — every create, edit, complete, and delete action is logged per project with timestamp and user
 - **Bulk Excel export** — select multiple projects and export them all into one formatted workbook
 - **Financials Dashboard** — view financial data across all projects in one window, with separate tabs for active jobs, labor hours & cost, and warranty/archived jobs; sortable columns, live search, and totals row
@@ -25,15 +25,25 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Task Notes History** — each task carries a timestamped note thread; view and add entries from the right-click context menu ("Notes History")
 - **RSS Feed Attachments** — attach one or more CSV or Excel (.xlsx/.xlsm) files to any job from the Notes window; view data in an interactive table with sortable columns; admins can add rows, edit rows, delete rows, and remove feeds; non-admins can submit proposed changes that are logged to the activity log
 - **WebPro ID** — store and display a WebPro ID on each job; shown in the project header alongside the Div25 button and editable with a single click
-- **Keyboard shortcuts** — Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search), Ctrl+Shift+F (task search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear active search)
+- **Keyboard shortcuts** — Ctrl+N (new project), Ctrl+T (new task), Ctrl+F (project search), Ctrl+E (export), Ctrl+Shift+E (bulk export), Escape (clear project search)
 - Visual segmented progress bar showing completion by phase
-- Search and filter tasks by phase or keyword
 - Sort the project list by Last Updated, Name, or Job Number — ascending or descending
 - **Shared database** — point all users to a shared folder (SharePoint / OneDrive) so everyone works from the same data in real time
 - Export a single project to Excel or JSON snapshot
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder
 - Auto-updates — when a new version is released, the app notifies you and installs it with one click
+
+---
+
+## What's New in v1.8.0
+
+- Hardened login and remember-me sessions with token validation, 30-day expiry, and safer handling for damaged user databases
+- Moved address book deletion approval to the Admin role instead of a hardcoded username
+- Improved financial workbook handling with `.xlsb` validation and clearer load errors
+- Fixed formatted contract values, dashboard task counts, compact task view, and cleanup of task-note history when tasks are removed
+- Simplified the task toolbar; compact task view now lives under **View → Compact Task View**
+- Added regression tests and CI checks for version metadata, authentication, exports, dashboards, and task-note cleanup
 
 ---
 
@@ -91,9 +101,8 @@ Click any project in the sidebar to open it; click an empty area of the sidebar 
 - **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**, **Notes History**
 - **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
-- Filter by phase using the **All phases** dropdown, or search by keyword in the **Filter tasks** box
-- Use **✓ All** / **✗ All** to bulk complete or uncomplete all currently visible tasks (confirmation required)
-- Toggle **Compact** to shrink row height and hide the Notes column for a denser view
+- Use **✓ All** / **✗ All** to bulk complete or uncomplete the current project's tasks (confirmation required)
+- Use **View → Compact Task View** to shrink row height and hide the Notes column for a denser view
 
 ### Task Notes History
 
@@ -111,7 +120,6 @@ Each task maintains a timestamped note thread separate from the single inline No
 | **Ctrl+N** | New project |
 | **Ctrl+T** | New task |
 | **Ctrl+F** | Focus project search |
-| **Ctrl+Shift+F** | Focus task search |
 | **Ctrl+E** | Export to Excel (current project) |
 | **Ctrl+Shift+E** | Bulk export to Excel |
 | **Escape** | Clear the active search box |
@@ -163,7 +171,7 @@ Click **ℹ️ Info** in the task bar to open a popup showing every field entere
 
 Click **📊 All Financials** in the sidebar (visible once a financial data file is configured) to open the dashboard.
 
-The dashboard shows financial data for all projects from your ODIN tracking workbook across four tabs:
+The dashboard shows financial data for all projects from your ODIN tracking workbook (`.xlsb`) across four tabs:
 
 | Tab | Contents |
 |-----|----------|
@@ -183,10 +191,10 @@ The dashboard shows financial data for all projects from your ODIN tracking work
 
 Click **📖 Address Book** in the sidebar to open the shared contact directory.
 
-- **Any user** can add or edit entries (Customer Name, Business Name, Street, Address Lines, City, State, ZIP)
-- To delete an entry, click **Request Delete** — the entry stays visible until the designated approver approves it
-- The approver sees a count badge on the button (e.g. **📖 Address Book (2)**) when requests are waiting
-- The approver can click **Review Pending Deletions** inside the dialog to approve or reject each request; they can also delete entries directly without the approval queue
+- **Admins and standard users** can add or edit entries (Customer Name, Business Name, Street, Address Lines, City, State, ZIP); view-only users can browse only
+- To delete an entry, click **Request Delete** — the entry stays visible until an admin approves it
+- Admins see a count badge on the button (e.g. **📖 Address Book (2)**) when requests are waiting
+- Admins can click **Review Pending Deletions** inside the dialog to approve or reject each request; they can also delete entries directly without the approval queue
 
 ### Viewing the Activity Log
 
@@ -268,6 +276,9 @@ financials_dashboard.py      — All-projects financials dashboard dialog
 user_auth.py                 — User account and authentication system
 updater.py                   — Auto-update system
 version.py                   — Current version number
+generate_guide.py            — Generates the PDF user guide
+tests/                       — Regression tests
+pyxlsb/                      — Bundled pyxlsb reader used by packaged builds
 phoenix_style.qss            — Phoenix Controls unified QSS stylesheet
 build.bat                    — Builds the exe, installer, and zips (developers only)
 installer.iss                — Inno Setup installer script (developers only)

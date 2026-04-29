@@ -1,6 +1,10 @@
 .idea/
 __pycache__/
 *.pyc
+.test_tmp/
+tmp*/
+Financials mod/
+Project Tracking Tool - User Guide.pdf
 *.db
 project_tracker_data.json
 dist/

@@ -29,7 +29,7 @@ You can expect a response within 3 business days. If the issue is confirmed, a f
 
 Key security considerations for this application:
 
-- **User credentials** are stored as bcrypt hashes — plain-text passwords are never written to disk
+- **User credentials** are stored as PBKDF2-HMAC-SHA256 hashes with per-user salts — plain-text passwords are never written to disk
 - **Project data** is stored in a local JSON file — ensure the data folder has appropriate OS-level access controls in shared environments
 - **RSS feed data** (CSV/Excel contents) is copied into the project JSON on attach — the original file path is also stored as a reference; ensure attached files do not contain sensitive data you would not otherwise store in the project database
 - **Auto-updater** downloads only from the official GitHub releases page of this repository

@@ -28,9 +28,9 @@ Compress-Archive -Path 'dist\ProjectTrackingTool' -DestinationPath 'dist\Project
 
 ---
 
-## Key constants
+## Access control
 
-- `ADDRESS_BOOK_APPROVER = "jglave"` in `project_tracker_backend.py` — the username that approves address book deletions. Must match the actual login username.
+- Address book deletion approval is tied to the app's `admin` role. There is no per-username approver constant to keep in sync.
 
 ## Commit style
 

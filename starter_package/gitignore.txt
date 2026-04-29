@@ -1,0 +1,9 @@
+.idea/
+__pycache__/
+*.pyc
+*.db
+*.json
+dist/
+build/
+*.spec
+.claude/

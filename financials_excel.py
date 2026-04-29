@@ -3,12 +3,14 @@ from __future__ import annotations
 import dataclasses
 import json
 import shutil
+import struct
 import tempfile
 import time
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zipfile import BadZipFile
 
 from financials_models import FinancialSnapshot
 
@@ -19,6 +21,19 @@ except ImportError:
     _PYXLSB_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_FINANCIAL_LOAD_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    RuntimeError,
+    KeyError,
+    IndexError,
+    TypeError,
+    AttributeError,
+    EOFError,
+    struct.error,
+    BadZipFile,
+)
 
 # How long (seconds) before re-reading the file
 _CACHE_TTL = 300  # 5 minutes
@@ -125,6 +140,10 @@ class ExcelFinancialsProvider:
             return snap.last_refreshed or ""
         return ""
 
+    @property
+    def load_error(self) -> str:
+        return self._load_error
+
     def get_all_financials(self) -> list[FinancialSnapshot]:
         """Return all cached FinancialSnapshots, reading the file if needed."""
         self._refresh_if_needed()
@@ -144,12 +163,13 @@ class ExcelFinancialsProvider:
             snap.touch()
             return snap
 
-        snap = self._cache.get(key)
-        if snap is None:
+        cached = self._cache.get(key)
+        if cached is None:
             snap = FinancialSnapshot.empty(job_number)
             snap.notes = [f"Job {job_number} not found in financial data file."]
             snap.touch()
-        return snap
+            return snap
+        return cached
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -158,7 +178,18 @@ class ExcelFinancialsProvider:
     def _refresh_if_needed(self) -> None:
         path = Path(self._file_path)
         if not path.exists():
-            logger.warning("Financial data file not found: %s", self._file_path)
+            self._load_error = f"Financial data file not found: {self._file_path}"
+            self._cache = {}
+            logger.warning("%s", self._load_error)
+            return
+
+        if path.suffix.casefold() != ".xlsb":
+            self._load_error = (
+                "Financial data file must be an Excel Binary Workbook (.xlsb). "
+                f"Selected file: {path.name}"
+            )
+            self._cache = {}
+            logger.warning("%s", self._load_error)
             return
 
         now = time.monotonic()
@@ -180,13 +211,17 @@ class ExcelFinancialsProvider:
                 "Financial data is unavailable — please reinstall the app "
                 "using ProjectTrackingToolSetup.exe to enable this feature."
             )
+            self._cache = {}
             return
 
         try:
             self._load(path)
             self._cache_time = now
             self._cache_mtime = mtime
-        except Exception:
+            self._load_error = ""
+        except _FINANCIAL_LOAD_ERRORS as exc:
+            self._load_error = f"Failed to read financial data file: {exc}"
+            self._cache = {}
             logger.exception("Failed to read financial data file: %s", self._file_path)
 
     def _load(self, path: Path) -> None:
@@ -285,22 +320,25 @@ class ExcelFinancialsProvider:
                                 if isinstance(cell.v, str) and "job number" in cell.v.lower():
                                     return name
                             break
-            except Exception:
+            except _FINANCIAL_LOAD_ERRORS:
                 continue
         return ""
 
     def _save_snapshot(self) -> None:
         """Write the current cache to a JSON snapshot file for other machines to read."""
         try:
+            if self._snapshot_path is None:
+                return
             data = {
                 "saved_at": datetime.now().replace(microsecond=0).isoformat(sep=" "),
                 "records": {k: dataclasses.asdict(v) for k, v in self._cache.items()},
             }
-            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._snapshot_path, "w", encoding="utf-8") as f:
+            snapshot_path = self._snapshot_path
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(snapshot_path, "w", encoding="utf-8") as f:
                 json.dump(data, f)
-            logger.info("Financial snapshot saved to %s", self._snapshot_path)
-        except Exception:
+            logger.info("Financial snapshot saved to %s", snapshot_path)
+        except OSError:
             logger.exception("Failed to save financial snapshot to %s", self._snapshot_path)
 
 
@@ -314,6 +352,7 @@ class SnapshotFinancialsProvider:
         self._snapshot_path = snapshot_path
         self._cache: dict[str, FinancialSnapshot] = {}
         self._loaded = False
+        self._load_error = ""
         self._load()
 
     def _load(self) -> None:
@@ -324,7 +363,9 @@ class SnapshotFinancialsProvider:
                 record.pop("job_id", None)  # drop fields not in current dataclass
                 self._cache[key] = FinancialSnapshot(**record)
             logger.info("Loaded %d records from financial snapshot %s", len(self._cache), self._snapshot_path)
-        except Exception:
+            self._load_error = ""
+        except (OSError, json.JSONDecodeError, TypeError):
+            self._load_error = f"Failed to load financial snapshot from {self._snapshot_path}"
             logger.exception("Failed to load financial snapshot from %s", self._snapshot_path)
 
     @property
@@ -332,6 +373,10 @@ class SnapshotFinancialsProvider:
         for snap in self._cache.values():
             return f"{snap.last_refreshed} (snapshot)" if snap.last_refreshed else ""
         return ""
+
+    @property
+    def load_error(self) -> str:
+        return self._load_error
 
     def get_all_financials(self) -> list[FinancialSnapshot]:
         """Return all cached FinancialSnapshots."""

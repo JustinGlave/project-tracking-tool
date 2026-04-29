@@ -33,6 +33,11 @@ jobs:
           python -m py_compile financials_dialog.py
           python -m py_compile financials_excel.py
           python -m py_compile financials_models.py
+          python -m py_compile generate_guide.py
+
+      - name: Version metadata check
+        run: |
+          python -c "from pathlib import Path; ns={}; exec(Path('version.py').read_text(encoding='utf-8'), ns); version=ns['__version__']; readme=Path('README.md').read_text(encoding='utf-8'); build=Path('build.bat').read_text(encoding='utf-8'); installer=Path('installer.iss').read_text(encoding='utf-8'); assert f'Current Version: v{version}' in readme, 'README version does not match version.py'; assert 'findstr' in build and '__version__' in build and 'version.py' in build, 'build.bat must read version.py'; assert '/DMyAppVersion=%VERSION%' in build, 'build.bat must pass VERSION to installer'; assert '#error MyAppVersion' in installer, 'installer.iss must fail without build-provided version'; print(f'version ok: {version}')"
 
       - name: Import check (catches missing deps and bad top-level code)
         # GUI modules are excluded — they load Qt platform plugins which
@@ -44,3 +49,6 @@ jobs:
           python -c "import version"
           python -c "import financials_models"
           python -c "import financials_excel"
+
+      - name: Regression tests
+        run: python -m unittest discover -s tests

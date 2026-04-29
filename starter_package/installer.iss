@@ -1,27 +1,27 @@
-#define MyAppName "Project Tracking Tool"
+#define MyAppName "Your App Name"
 #define MyAppPublisher "ATS Inc."
-#define MyAppExeName "ProjectTrackingTool.exe"
+#define MyAppExeName "YourAppName.exe"
 #ifndef MyAppVersion
-  #error MyAppVersion must be supplied by build.bat using /DMyAppVersion=...
+  #define MyAppVersion "1.0.0"
 #endif
 
 [Setup]
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-AppPublisherURL=https://github.com/JustinGlave/project-tracking-tool
-AppSupportURL=https://github.com/JustinGlave/project-tracking-tool/issues
-AppUpdatesURL=https://github.com/JustinGlave/project-tracking-tool/releases
+AppPublisherURL=https://github.com/JustinGlave/your-repo-name
+AppSupportURL=https://github.com/JustinGlave/your-repo-name/issues
+AppUpdatesURL=https://github.com/JustinGlave/your-repo-name/releases
 
 ; Install to LocalAppData so no admin rights are needed and the auto-updater works
-DefaultDirName={localappdata}\ATS Inc\Project Tracking Tool
-DefaultGroupName=ATS Inc\Project Tracking Tool
+DefaultDirName={localappdata}\ATS Inc\Your App Name
+DefaultGroupName=ATS Inc\Your App Name
 DisableProgramGroupPage=yes
 
 ; Output
 OutputDir=dist
-OutputBaseFilename=ProjectTrackingToolSetup
-SetupIconFile=PTT_Normal.ico
+OutputBaseFilename=YourAppNameSetup
+SetupIconFile=AppIcon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 
@@ -35,17 +35,16 @@ SolidCompression=yes
 
 ; Wizard appearance
 WizardStyle=modern
-WizardResizable=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Include the entire PyInstaller output folder
-Source: "dist\ProjectTrackingTool\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\YourAppName\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-; Desktop shortcut
+; Desktop shortcut — {userdesktop} avoids access denied on no-admin installs
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 ; Start Menu
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
@@ -56,11 +55,8 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Clean up any files the app creates in its folder (logs, temp files)
+; Clean up any files the app creates in its install folder
 Type: filesandordirs; Name: "{app}"
-; Clean up session files left in %APPDATA%
-Type: files; Name: "{userappdata}\ATS Inc\Project Tracking Tool\session.json"
-Type: files; Name: "{userappdata}\ATS Inc\Project Tracking Tool\session_snapshot.json"
 
 [Code]
 // Ask user if they want to keep their data on uninstall
@@ -71,12 +67,11 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    DataDir := ExpandConstant('{userappdata}\ATS Inc\Project Tracking Tool');
+    DataDir := ExpandConstant('{userappdata}\ATS Inc\Your App Name');
     if DirExists(DataDir) then
     begin
       MsgResult := MsgBox(
-        'Do you want to delete your project data?' + #13#10 +
-        '(jobs, tasks, notes, and change orders)' + #13#10#13#10 +
+        'Do you want to delete your application data?' + #13#10#13#10 +
         'Click Yes to delete all data, or No to keep it.',
         mbConfirmation, MB_YESNO
       );

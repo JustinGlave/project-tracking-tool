@@ -115,11 +115,6 @@ class ChangeOrderRecord:
     notes: str = ""
 
 
-# Username that must approve address-book deletion requests.
-# Must match the login username exactly (case-insensitive comparison is used).
-ADDRESS_BOOK_APPROVER = "jglave"
-
-
 @dataclass(slots=True)
 class AddressBookRecord:
     id: Optional[int] = None
@@ -216,6 +211,31 @@ def _migrate_rss_files(project_dict: dict) -> list:
     if old_path:
         return [{"name": "Imported", "path": old_path}]
     return []
+
+
+def parse_currency(value: Any) -> float:
+    """Parse user-entered currency such as "$1,234.56" or "(1,234.56)"."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return 0.0
+
+    negative = text.startswith("(") and text.endswith(")")
+    cleaned = (
+        text.strip("()")
+        .replace("$", "")
+        .replace(",", "")
+        .replace(" ", "")
+    )
+    try:
+        parsed = float(cleaned)
+    except ValueError:
+        return 0.0
+    return -parsed if negative else parsed
 
 
 class ProjectTrackerBackend:
@@ -338,8 +358,11 @@ class ProjectTrackerBackend:
                     if attempt == 4:
                         raise
                     time.sleep(0.2 * (attempt + 1))
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
+        except (OSError, TypeError, ValueError):
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Failed to remove temporary save file: %s", tmp_path)
             raise
         self._cache = data
         try:
@@ -678,6 +701,10 @@ class ProjectTrackerBackend:
         task_name = target_task["task_name"]
         owning_project_id = int(target_task["project_id"])
         data["tasks"] = [item for item in data["tasks"] if int(item["id"]) != task_id]
+        data["task_notes"] = [
+            note for note in data.get("task_notes", [])
+            if int(note.get("task_id", 0)) != task_id
+        ]
 
         owning_project = self._find_project_dict(data, owning_project_id)
         if owning_project is not None:
@@ -691,7 +718,15 @@ class ProjectTrackerBackend:
         """Delete all tasks for a project and re-insert from the chosen template."""
         task_list = PHOENIX_TASKS if task_template == "phoenix" else DEFAULT_TASKS
         data = self._load_data()
+        removed_task_ids = {
+            int(t["id"]) for t in data["tasks"]
+            if int(t["project_id"]) == project_id
+        }
         data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) != project_id]
+        data["task_notes"] = [
+            note for note in data.get("task_notes", [])
+            if int(note.get("task_id", 0)) not in removed_task_ids
+        ]
         project = self._find_project_dict(data, project_id)
         if project is not None:
             project["updated_at"] = self._now_iso()
@@ -867,10 +902,7 @@ class ProjectTrackerBackend:
         project = self.get_project(project_id)
 
         def _parse(val: str) -> float:
-            try:
-                return float(str(val).replace(",", "").replace("$", "").strip())
-            except (ValueError, TypeError):
-                return 0.0
+            return parse_currency(val)
 
         ats_base = _parse(project.contract_value) if project else 0.0
         ats_accepted = sum(_parse(c.ats_price) for c in cos if c.ats_status == "Accepted")
@@ -1157,10 +1189,18 @@ class ProjectTrackerBackend:
         if not test_ids:
             return
         data["projects"] = [p for p in data["projects"] if int(p["id"]) not in test_ids]
+        removed_task_ids = {
+            int(t["id"]) for t in data["tasks"]
+            if int(t["project_id"]) in test_ids
+        }
         data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) not in test_ids]
         data["notes"] = [n for n in data["notes"] if int(n["project_id"]) not in test_ids]
         data["change_orders"] = [c for c in data["change_orders"] if int(c["project_id"]) not in test_ids]
         data["activity_log"] = [a for a in data.get("activity_log", []) if int(a["project_id"]) not in test_ids]
+        data["task_notes"] = [
+            tn for tn in data.get("task_notes", [])
+            if int(tn.get("task_id", 0)) not in removed_task_ids
+        ]
         self._save_data(data)
 
     def export_project_snapshot(self, project_id: int, export_path: str | Path) -> Path:
@@ -1277,7 +1317,7 @@ class ProjectTrackerBackend:
             ("Sales Engineer",       project.sales_engineer),
             ("Target Completion",    project.target_completion or "—"),
             ("Booked Date",          project.booked_date or "—"),
-            ("Contract Value",       f"${float(project.contract_value):,.2f}"
+            ("Contract Value",       f"${parse_currency(project.contract_value):,.2f}"
                                      if project.contract_value else "—"),
             ("Owner",                project.owner or "—"),
             ("Contracted With",      project.contracted_with or "—"),
@@ -1725,7 +1765,12 @@ class ProjectTrackerBackend:
         tasks = data.get("tasks", [])
 
         active_projects = [p for p in projects if not p.get("is_test", False)]
-        incomplete_tasks = [t for t in tasks if not t.get("is_complete", False)]
+        active_project_ids = {int(p["id"]) for p in active_projects}
+        active_tasks = [
+            t for t in tasks
+            if int(t.get("project_id", 0)) in active_project_ids
+        ]
+        incomplete_tasks = [t for t in active_tasks if not t.get("is_complete", False)]
 
         activity = data.get("activity_log", [])
         activity_sorted = heapq.nlargest(20, activity, key=lambda a: a.get("timestamp", ""))
@@ -1754,10 +1799,7 @@ class ProjectTrackerBackend:
 
         sortable_cv = []
         for p in active_projects:
-            try:
-                cv = float(p.get("contract_value") or 0)
-            except (TypeError, ValueError):
-                cv = 0.0
+            cv = parse_currency(p.get("contract_value") or 0)
             if cv > 0:
                 sortable_cv.append((cv, p))
         sortable_cv.sort(key=lambda x: x[0], reverse=True)
@@ -1773,7 +1815,7 @@ class ProjectTrackerBackend:
         return {
             "project_count": len(active_projects),
             "incomplete_count": len(incomplete_tasks),
-            "total_tasks": len(tasks),
+            "total_tasks": len(active_tasks),
             "recent_activity": recent_activity,
             "top_contract": top_contract,
             "top_newest": top_newest,
@@ -2058,7 +2100,7 @@ class ProjectTrackerBackend:
         self._save_data(data)
 
     def request_delete_address(self, address_id: int) -> int:
-        """Queue a deletion request for approval by ADDRESS_BOOK_APPROVER."""
+        """Queue a deletion request for approval by an administrator."""
         data = self._load_data()
         entry = next((e for e in data.get("address_book", []) if int(e["id"]) == address_id), None)
         if entry is None:
@@ -2084,7 +2126,7 @@ class ProjectTrackerBackend:
         return new_id
 
     def delete_address_direct(self, address_id: int) -> None:
-        """Directly remove an address entry (only for ADDRESS_BOOK_APPROVER)."""
+        """Directly remove an address entry."""
         data = self._load_data()
         data["address_book"] = [e for e in data.get("address_book", []) if int(e["id"]) != address_id]
         data["pending_deletes"] = [

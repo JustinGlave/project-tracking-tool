@@ -20,6 +20,15 @@ from PySide6.QtWidgets import (
 
 from financials_models import FinancialSnapshot
 
+_EXPECTED_PROVIDER_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    RuntimeError,
+    KeyError,
+    TypeError,
+    AttributeError,
+)
+
 
 class FinancialsProvider(Protocol):
     def get_financials(self, job_number: str) -> FinancialSnapshot: ...
@@ -275,7 +284,7 @@ class FinancialsDialog(QDialog):
                 self._provider.force_refresh()
             self._snapshot = self._provider.get_financials(self._job_number)
             self._render_snapshot()
-        except Exception as exc:
+        except _EXPECTED_PROVIDER_ERRORS as exc:
             QMessageBox.critical(self, "Financial refresh failed", str(exc))
         finally:
             self.refresh_btn.setEnabled(True)

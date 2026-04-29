@@ -183,7 +183,8 @@ class _LaborModel(QAbstractTableModel):
             return _labor_rem_usd(s)
         if col == _LAB_BUDGET_COL:
             return _total_labor_budget(s)
-        return getattr(s, _LAB_COLUMNS[col][1])
+        attr = _LAB_COLUMNS[col][1]
+        return getattr(s, attr) if attr is not None else None
 
     def data(self, index: QModelIndex | QPersistentModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
@@ -329,6 +330,7 @@ class FinancialsDashboardDialog(QDialog):
             self._provider.force_refresh()
         all_snaps = [s for s in self._provider.get_all_financials() if _valid(s)]
         all_snaps.sort(key=lambda s: s.job_number)
+        load_error = str(getattr(self._provider, "load_error", "") or "")
 
         inactive = [s for s in all_snaps if "warranty" in s.status.lower() or "archiv" in s.status.lower()]
         active   = [s for s in all_snaps if s not in inactive]
@@ -343,7 +345,10 @@ class FinancialsDashboardDialog(QDialog):
         _load("_lab_model", "_lab_proxy", "_lab_table", _LaborModel, active)
         _load("_war_model", "_war_proxy", "_war_table", _FinModel,   inactive)
 
-        ts = f"  |  Data as of {all_snaps[0].last_refreshed}" if all_snaps and all_snaps[0].last_refreshed else ""
+        if load_error and not all_snaps:
+            ts = f"  |  {load_error}"
+        else:
+            ts = f"  |  Data as of {all_snaps[0].last_refreshed}" if all_snaps and all_snaps[0].last_refreshed else ""
         self._status_label.setText(
             f"{len(active)} active  |  {len(inactive)} warranty/archived{ts}"
         )

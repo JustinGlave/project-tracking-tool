@@ -3,11 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import secrets
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _PBKDF2_ITERATIONS = 260_000
 _PBKDF2_ALGO = "sha256"
+_SESSION_TOKEN_DAYS = 30
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -27,8 +27,28 @@ def _hash_password(password: str, salt: str) -> str:
     return dk.hex()
 
 
+def _session_expiry_iso() -> str:
+    return (datetime.now() + timedelta(days=_SESSION_TOKEN_DAYS)).replace(
+        microsecond=0
+    ).isoformat(sep=" ")
+
+
+def _session_is_expired(value: str) -> bool:
+    if not value.strip():
+        return True
+    try:
+        expires_at = datetime.fromisoformat(value)
+    except ValueError:
+        return True
+    return expires_at <= datetime.now()
+
+
 ROLES = ("admin", "user", "view_only")
 ROLE_LABELS = {"admin": "Admin", "user": "User", "view_only": "View Only"}
+
+
+class AuthStoreError(RuntimeError):
+    """Raised when the user database exists but cannot be loaded safely."""
 
 
 @dataclass
@@ -39,6 +59,8 @@ class UserRecord:
     must_change_password: bool = False
     created_at: str = ""
     role: str = "user"  # "admin", "user", or "view_only"
+    session_token_hash: str = ""
+    session_token_expires_at: str = ""
 
 
 class UserManager:
@@ -75,6 +97,8 @@ class UserManager:
             raise ValueError(f"Invalid role '{role}'. Must be one of: {', '.join(ROLES)}")
 
         data = self._load()
+        if not data:
+            role = "admin"
         if username.casefold() in {k.casefold() for k in data}:
             raise ValueError(f"User '{username}' already exists.")
 
@@ -116,6 +140,8 @@ class UserManager:
         data[key]["salt"] = salt
         data[key]["password_hash"] = _hash_password(new_password, salt)
         data[key]["must_change_password"] = False
+        data[key]["session_token_hash"] = ""
+        data[key]["session_token_expires_at"] = ""
         self._save(data)
 
     def delete_user(self, username: str) -> None:
@@ -160,6 +186,47 @@ class UserManager:
         data[key]["role"] = role
         self._save(data)
 
+    def create_session_token(self, username: str) -> str:
+        """Create and store a remember-me token for a successfully authenticated user."""
+        data = self._load()
+        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        if key is None:
+            raise ValueError(f"User '{username}' not found.")
+        token = secrets.token_urlsafe(32)
+        data[key]["session_token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        data[key]["session_token_expires_at"] = _session_expiry_iso()
+        self._save(data)
+        return token
+
+    def authenticate_session(self, username: str, token: str) -> Optional[UserRecord]:
+        """Return the user if the stored remember-me token matches."""
+        if not username.strip() or not token.strip():
+            return None
+        data = self._load()
+        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        if key is None:
+            return None
+        match = data[key]
+        expected = str(match.get("session_token_hash", ""))
+        supplied = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        if not expected or not secrets.compare_digest(expected, supplied):
+            return None
+        if _session_is_expired(str(match.get("session_token_expires_at", ""))):
+            data[key]["session_token_hash"] = ""
+            data[key]["session_token_expires_at"] = ""
+            self._save(data)
+            return None
+        return UserRecord(**match)
+
+    def clear_session_token(self, username: str) -> None:
+        data = self._load()
+        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        if key is None:
+            return
+        data[key]["session_token_hash"] = ""
+        data[key]["session_token_expires_at"] = ""
+        self._save(data)
+
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
     # ------------------------------------------------------------------ #
@@ -170,13 +237,17 @@ class UserManager:
             return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
-            return
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AuthStoreError(f"Unable to load user database: {self._path}") from exc
+        if not isinstance(raw, dict):
+            raise AuthStoreError(f"User database has an invalid format: {self._path}")
         if not raw:
             return
 
         changed = False
         for val in raw.values():
+            if not isinstance(val, dict):
+                raise AuthStoreError(f"User database has an invalid record: {self._path}")
             if "role" not in val:
                 # Migrate from old is_admin bool
                 val["role"] = "admin" if val.pop("is_admin", False) else "user"
@@ -185,6 +256,12 @@ class UserManager:
                 # Remove legacy field if it still lingers
                 if val.pop("is_admin", None) is not None:
                     changed = True
+            if "session_token_hash" not in val:
+                val["session_token_hash"] = ""
+                changed = True
+            if "session_token_expires_at" not in val:
+                val["session_token_expires_at"] = ""
+                changed = True
 
         # Ensure at least one admin
         if not any(v.get("role") == "admin" for v in raw.values()):
@@ -201,16 +278,24 @@ class UserManager:
             return {}
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise AuthStoreError(f"User database has an invalid format: {self._path}")
             # Normalize legacy is_admin field so UserRecord(**match) never fails
             for val in data.values():
+                if not isinstance(val, dict):
+                    raise AuthStoreError(f"User database has an invalid record: {self._path}")
                 if "role" not in val:
                     val["role"] = "admin" if val.pop("is_admin", False) else "user"
                 else:
                     val.pop("is_admin", None)
+                val.setdefault("session_token_hash", "")
+                val.setdefault("session_token_expires_at", "")
             return data
-        except Exception:
+        except AuthStoreError:
+            raise
+        except (OSError, json.JSONDecodeError) as exc:
             logger.exception("Failed to load users file: %s", self._path)
-            return {}
+            raise AuthStoreError(f"Unable to load user database: {self._path}") from exc
 
     def _save(self, data: dict) -> None:
         tmp_fd, tmp_str = tempfile.mkstemp(dir=self._path.parent, suffix=".tmp")
@@ -219,6 +304,9 @@ class UserManager:
             with open(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
             tmp_path.replace(self._path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
+        except (OSError, TypeError, ValueError):
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Failed to remove temporary users file: %s", tmp_path)
             raise

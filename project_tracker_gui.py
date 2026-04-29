@@ -10,6 +10,9 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+from zipfile import BadZipFile
+
+from openpyxl.utils.exceptions import InvalidFileException
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +102,6 @@ from PySide6.QtWidgets import (
 )
 
 from project_tracker_backend import (
-    ADDRESS_BOOK_APPROVER,
     AddressBookRecord,
     ChangeOrderRecord,
     DEFAULT_TASKS,
@@ -108,14 +110,26 @@ from project_tracker_backend import (
     ProjectRecord,
     ProjectTrackerBackend,
     TaskRecord,
+    parse_currency,
 )
 from updater import UpdateInfo, check_for_update, download_and_apply
 from financials_dialog import FinancialsDialog
 from financials_dashboard import FinancialsDashboardDialog
 from financials_excel import ExcelFinancialsProvider, SnapshotFinancialsProvider
-from user_auth import UserManager, UserRecord
+from user_auth import AuthStoreError, UserManager, UserRecord
 
 PHASES = sorted({item["phase"] for item in DEFAULT_TASKS} | {"General"})
+
+_EXPECTED_APP_ERRORS: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    RuntimeError,
+    KeyError,
+    TypeError,
+    AttributeError,
+    BadZipFile,
+    InvalidFileException,
+)
 
 # Fields compared when detecting changes between sessions
 _CHANGE_FIELDS: dict[str, str] = {
@@ -549,7 +563,7 @@ class RSSViewDialog(QDialog):
             path = entry.get("path", "")
             try:
                 self._headers, self._rows = _read_rss_file(path)
-            except Exception as exc:
+            except _EXPECTED_APP_ERRORS as exc:
                 self._headers, self._rows = [], []
                 QMessageBox.warning(self, "RSS", f"Could not read file:\n{exc}")
 
@@ -750,7 +764,7 @@ class RSSPreviewDialog(QDialog):
         try:
             headers, data_rows = _read_rss_file(file_path)
             error = None
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             headers, data_rows, error = [], [], str(exc)
 
         self._ok = False
@@ -1895,19 +1909,31 @@ class LoginDialog(QDialog):
     def _attempt_login(self) -> None:
         username = self._username_edit.text().strip()
         password = self._password_edit.text()
-        user = self._user_manager.authenticate(username, password)
+        try:
+            user = self._user_manager.authenticate(username, password)
+        except AuthStoreError as exc:
+            self._error_lbl.setText(f"{exc}\n\nThe user database must be repaired before login.")
+            self._error_lbl.setVisible(True)
+            return
         if user is None:
             self._error_lbl.setText("Incorrect username or password.")
             self._error_lbl.setVisible(True)
             self._password_edit.clear()
             return
         self._logged_in_user = user
-        if self._remember_check.isChecked():
-            _SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(_SESSION_PATH, "w", encoding="utf-8") as f:
-                json.dump({"username": user.username}, f)
-        else:
-            _SESSION_PATH.unlink(missing_ok=True)
+        try:
+            if self._remember_check.isChecked():
+                token = self._user_manager.create_session_token(user.username)
+                _SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(_SESSION_PATH, "w", encoding="utf-8") as f:
+                    json.dump({"username": user.username, "token": token}, f)
+            else:
+                self._user_manager.clear_session_token(user.username)
+                _SESSION_PATH.unlink(missing_ok=True)
+        except (AuthStoreError, OSError) as exc:
+            self._error_lbl.setText(f"Could not update login session:\n{exc}")
+            self._error_lbl.setVisible(True)
+            return
         self.accept()
 
     def logged_in_user(self) -> Optional[UserRecord]:
@@ -1966,7 +1992,7 @@ class ChangePasswordDialog(QDialog):
             return
         try:
             self._user_manager.change_password(self._username, pw)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             self._error_lbl.setText(str(exc))
             self._error_lbl.setVisible(True)
             return
@@ -2033,6 +2059,26 @@ class SelfChangePasswordDialog(QDialog):
             self._error_lbl.setVisible(True)
 
 
+def _force_password_change(
+    user_manager: UserManager,
+    username: str,
+    parent: Optional[QWidget] = None,
+) -> bool:
+    dlg = ChangePasswordDialog(user_manager, username, parent=parent)
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return False
+    try:
+        user = user_manager.get_user(username)
+    except AuthStoreError as exc:
+        QMessageBox.critical(
+            parent,
+            "User Database Error",
+            f"{exc}\n\nThe user database must be repaired before login can continue.",
+        )
+        return False
+    return bool(user and not user.must_change_password)
+
+
 class ManageUsersDialog(QDialog):
     """Admin UI for creating, listing, and managing user accounts."""
 
@@ -2064,6 +2110,8 @@ class ManageUsersDialog(QDialog):
         self._new_role_combo = QComboBox()
         for label, key in zip(self._ROLE_LABELS, self._ROLE_KEYS):
             self._new_role_combo.addItem(label, key)
+        if not self._user_manager.has_any_users():
+            self._new_role_combo.setCurrentIndex(self._ROLE_KEYS.index("admin"))
         add_btn = PrimaryButton("Add User")
         add_btn.clicked.connect(self._add_user)
         add_row.addWidget(self._new_username, 2)
@@ -2428,8 +2476,11 @@ class TaskNotesHistoryDialog(QDialog):
     def _populate(self) -> None:
         while self._notes_layout.count():
             child = self._notes_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+            if child is None:
+                continue
+            widget = child.widget()
+            if widget is not None:
+                widget.deleteLater()
 
         history = self._backend.list_task_notes(self._task.id)
 
@@ -2500,7 +2551,7 @@ class TaskNotesHistoryDialog(QDialog):
             self._backend.update_task(self._task.id, notes=text)
             # Append to the history thread
             self._backend.add_task_note(self._task.id, text)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Error", str(exc))
             return
         self._dirty = True
@@ -2596,6 +2647,7 @@ class MainWindow(QMainWindow):
         self._financials_provider: Optional[ExcelFinancialsProvider | SnapshotFinancialsProvider] = self._build_financials_provider()
         self.current_tasks: list[TaskRecord] = []
 
+        self._auth_error_shown = False
         self._populating = False
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
@@ -2677,8 +2729,13 @@ class MainWindow(QMainWindow):
         self._update_banner: Optional[UpdateBanner] = None
 
         # Show correct initial page
-        um = UserManager(self._users_path())
-        if self._current_user or not um.has_any_users():
+        um = self._user_manager_or_warn()
+        try:
+            no_users = bool(um and not um.has_any_users())
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            no_users = False
+        if self._current_user or no_users:
             self._stack.setCurrentIndex(1)
             if self._current_user:
                 self._update_status_bar_user()
@@ -2953,7 +3010,7 @@ class MainWindow(QMainWindow):
         for row, proj in enumerate(stats["top_contract"]):
             self._dash_contract_table.insertRow(row)
             try:
-                cv_display = f"${float(proj['contract_value']):,.0f}"
+                cv_display = f"${parse_currency(proj['contract_value']):,.0f}"
             except (TypeError, ValueError):
                 cv_display = proj["contract_value"] or "—"
             for col, val in enumerate([proj["job_number"] or "—", proj["job_name"], cv_display]):
@@ -3131,89 +3188,65 @@ class MainWindow(QMainWindow):
         wrapper_layout.setSpacing(12)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(4)
+        top_row.setSpacing(6)
         title_label = QLabel("Tasks")
         title_label.setObjectName("SectionTitle")
         top_row.addWidget(title_label)
 
         _tf = QFont()
         _tf.setPointSize(9)
-        _sp = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        _fixed_sp = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
-        def _toolbar_btn(label: str, max_w: int, tip: str = "", cls: type[QPushButton] = SecondaryButton) -> QPushButton:
+        def _toolbar_btn(label: str, width: int, tip: str = "", cls: type[QPushButton] = SecondaryButton) -> QPushButton:
             btn = cls(label)
-            btn.setMaximumWidth(max_w)
-            btn.setMinimumWidth(36)
-            btn.setSizePolicy(_sp)
+            btn.setFixedWidth(width)
+            btn.setSizePolicy(_fixed_sp)
             if tip:
                 btn.setToolTip(tip)
             return btn
 
-        self.notes_btn = _toolbar_btn("📝 Notes", 100, "Open job progress notes")
+        self.notes_btn = _toolbar_btn("📝 Notes", 96, "Open job progress notes")
         self.notes_btn.clicked.connect(self._open_notes)
         top_row.addWidget(self.notes_btn)
 
-        self.co_btn = _toolbar_btn("🚀 CO Log", 114, "Open change order log")
+        self.co_btn = _toolbar_btn("🚀 CO Log", 108, "Open change order log")
         self.co_btn.clicked.connect(self._open_change_orders)
         top_row.addWidget(self.co_btn)
 
-        self.project_info_btn = _toolbar_btn("ℹ️ Info", 92, "View all project details")
+        self.project_info_btn = _toolbar_btn("ℹ️ Info", 86, "View all project details")
         self.project_info_btn.clicked.connect(self._show_project_info)
         top_row.addWidget(self.project_info_btn)
 
-        self.financials_btn = _toolbar_btn("💰 Financials", 130, "View financial data from ODIN")
+        self.financials_btn = _toolbar_btn("💰 Financials", 122, "View financial data from ODIN")
         self.financials_btn.clicked.connect(self._open_financials)
         top_row.addWidget(self.financials_btn)
 
-        self.activity_log_btn = _toolbar_btn("📜 Activity", 116, "View activity log for this project")
+        self.activity_log_btn = _toolbar_btn("📜 Activity", 106, "View activity log for this project")
         self.activity_log_btn.clicked.connect(self._open_activity_log)
         top_row.addWidget(self.activity_log_btn)
 
         top_row.addStretch(1)
 
-        self.phase_filter = QComboBox()
-        self.phase_filter.setMaximumWidth(118)
-        self.phase_filter.setMinimumWidth(36)
-        self.phase_filter.setSizePolicy(_sp)
-        self.phase_filter.addItem("All phases")
-        self.phase_filter.addItems(PHASES)
-        self.phase_filter.currentTextChanged.connect(self.populate_tasks)
-        top_row.addWidget(self.phase_filter)
-
-        self.add_task_btn = _toolbar_btn("Add Task", 92, cls=PrimaryButton)
+        self.add_task_btn = _toolbar_btn("Add Task", 96, cls=PrimaryButton)
         self.add_task_btn.clicked.connect(self.add_task)
         top_row.addWidget(self.add_task_btn)
-
-        self.task_search_edit = QLineEdit()
-        self.task_search_edit.setMaximumWidth(110)
-        self.task_search_edit.setMinimumWidth(36)
-        self.task_search_edit.setSizePolicy(_sp)
-        self.task_search_edit.setPlaceholderText("Filter tasks...")
-        self.task_search_edit.textChanged.connect(self.populate_tasks)
-        top_row.addWidget(self.task_search_edit)
 
         self.template_apply_combo = QComboBox()
         self.template_apply_combo.addItem("Templates")
         self.template_apply_combo.addItem("Standard", "standard")
         self.template_apply_combo.addItem("Phoenix", "phoenix")
-        self.template_apply_combo.setMaximumWidth(108)
-        self.template_apply_combo.setMinimumWidth(36)
-        self.template_apply_combo.setSizePolicy(_sp)
+        self.template_apply_combo.setFixedWidth(110)
+        self.template_apply_combo.setSizePolicy(_fixed_sp)
         self.template_apply_combo.activated.connect(self._apply_template_from_combo)
         top_row.addWidget(self.template_apply_combo)
 
-        self.bulk_complete_btn = _toolbar_btn("✓ All", 68, "Mark all visible tasks complete")
+        self.bulk_complete_btn = _toolbar_btn("✓ All", 66, "Mark all visible tasks complete")
         self.bulk_complete_btn.clicked.connect(self._bulk_complete_tasks)
         top_row.addWidget(self.bulk_complete_btn)
 
-        self.bulk_uncomplete_btn = _toolbar_btn("✗ All", 68, "Mark all visible tasks incomplete")
+        self.bulk_uncomplete_btn = _toolbar_btn("✗ All", 66, "Mark all visible tasks incomplete")
         self.bulk_uncomplete_btn.clicked.connect(self._bulk_uncomplete_tasks)
         top_row.addWidget(self.bulk_uncomplete_btn)
-
-        self.compact_btn = _toolbar_btn("⊟ Compact", 100, "Toggle compact row view", cls=TertiaryButton)
-        self.compact_btn.setCheckable(True)
-        self.compact_btn.clicked.connect(self._toggle_compact_view)
-        top_row.addWidget(self.compact_btn)
 
         wrapper_layout.addLayout(top_row)
 
@@ -3613,7 +3646,7 @@ class MainWindow(QMainWindow):
             self,
             "Select Financial Data File",
             str(Path(current_file).parent) if current_file else str(Path.home()),
-            "Excel Files (*.xlsb *.xlsx *.xlsm);;All Files (*)",
+            "Excel Binary Workbook (*.xlsb);;All Files (*)",
         )
         if not file_path:
             return
@@ -3682,12 +3715,18 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _open_address_book(self) -> None:
-        dlg = AddressBookDialog(self.backend, self._current_user, parent=self)
+        dlg = AddressBookDialog(
+            self.backend,
+            self._current_user,
+            can_approve_deletes=self._current_user_is_admin(),
+            view_only=self._current_user_view_only(),
+            parent=self,
+        )
         dlg.exec()
         self._refresh_address_book_btn()
 
     def _refresh_address_book_btn(self) -> None:
-        if self._current_user.casefold() == ADDRESS_BOOK_APPROVER.casefold():
+        if self._current_user_is_admin():
             count = self.backend.pending_delete_count()
             if count:
                 self.address_book_btn.setText(f"📖 Address Book ({count})")
@@ -3762,6 +3801,23 @@ class MainWindow(QMainWindow):
         """Return path to users.json, co-located with the data file."""
         return self.backend.db_path.parent / "users.json"
 
+    def _show_auth_store_error(self, exc: AuthStoreError) -> None:
+        if self._auth_error_shown:
+            return
+        self._auth_error_shown = True
+        QMessageBox.critical(
+            self,
+            "User Database Error",
+            f"{exc}\n\nThe user database must be repaired before changing login or account settings.",
+        )
+
+    def _user_manager_or_warn(self) -> Optional[UserManager]:
+        try:
+            return UserManager(self._users_path())
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            return None
+
     def _update_status_bar_user(self) -> None:
         from user_auth import ROLE_LABELS
         if self._current_user:
@@ -3779,11 +3835,20 @@ class MainWindow(QMainWindow):
         'none' when users exist but nobody is logged in, or the user's
         actual role string otherwise.
         """
+        um = self._user_manager_or_warn()
+        if um is None:
+            return "none"
         if not self._current_user:
-            um = UserManager(self._users_path())
-            return "admin" if not um.has_any_users() else "none"
-        um = UserManager(self._users_path())
-        user = um.get_user(self._current_user)
+            try:
+                return "admin" if not um.has_any_users() else "none"
+            except AuthStoreError as exc:
+                self._show_auth_store_error(exc)
+                return "none"
+        try:
+            user = um.get_user(self._current_user)
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            return "none"
         return user.role if user is not None else "user"
 
     def _current_user_is_admin(self) -> bool:
@@ -3793,8 +3858,15 @@ class MainWindow(QMainWindow):
         return self._current_user_role() == "view_only"
 
     def _do_login(self) -> None:
-        um = UserManager(self._users_path())
-        if not um.has_any_users():
+        um = self._user_manager_or_warn()
+        if um is None:
+            return
+        try:
+            has_users = um.has_any_users()
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            return
+        if not has_users:
             return
         dlg = LoginDialog(um, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -3803,7 +3875,13 @@ class MainWindow(QMainWindow):
         if user is None:
             return
         if user.must_change_password:
-            ChangePasswordDialog(um, user.username, parent=self).exec()
+            if not _force_password_change(um, user.username, parent=self):
+                QMessageBox.warning(
+                    self,
+                    "Password Change Required",
+                    "You must change your temporary password before continuing.",
+                )
+                return
         self._current_user = user.username
         self.backend.current_user = user.username
         self._reset_controls()
@@ -3863,10 +3941,19 @@ class MainWindow(QMainWindow):
         """Toggle menu item visibility based on logged-in state and role."""
         logged_in = bool(self._current_user)
         view_only = self._current_user_view_only()
-        self._login_action.setVisible(not logged_in)
+        no_users = False
+        um = self._user_manager_or_warn()
+        if um is not None:
+            try:
+                no_users = not um.has_any_users()
+            except AuthStoreError as exc:
+                self._show_auth_store_error(exc)
+        self._login_action.setVisible(not logged_in and not no_users)
         self._logout_action.setVisible(logged_in)
         self._change_pw_action.setVisible(logged_in)
-        self._manage_users_action_ref.setVisible(logged_in and self._current_user_is_admin())
+        self._manage_users_action_ref.setVisible(
+            (logged_in and self._current_user_is_admin()) or no_users
+        )
         for action in self._logged_in_only_actions:
             action.setVisible(logged_in)
         # Hide write actions from view-only users
@@ -3875,16 +3962,40 @@ class MainWindow(QMainWindow):
 
     def _open_manage_users(self) -> None:
         if not self._current_user_is_admin():
+            if self._auth_error_shown:
+                return
             QMessageBox.warning(self, "Access Denied", "Only administrators can manage users.")
             return
-        um = UserManager(self._users_path())
+        um = self._user_manager_or_warn()
+        if um is None:
+            return
+        try:
+            was_first_run = not um.has_any_users()
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            return
         dlg = ManageUsersDialog(um, self._current_user, parent=self)
         dlg.exec()
+        try:
+            has_users = um.has_any_users()
+        except AuthStoreError as exc:
+            self._show_auth_store_error(exc)
+            return
+        if was_first_run and not self._current_user and has_users:
+            self._stack.setCurrentIndex(0)
+            self._update_auth_menu()
+            QMessageBox.information(
+                self,
+                "Account Created",
+                "Admin account created. Please log in to continue.",
+            )
 
     def _open_change_my_password(self) -> None:
         if not self._current_user:
             return
-        um = UserManager(self._users_path())
+        um = self._user_manager_or_warn()
+        if um is None:
+            return
         dlg = SelfChangePasswordDialog(um, self._current_user, parent=self)
         dlg.exec()
 
@@ -3945,6 +4056,11 @@ class MainWindow(QMainWindow):
         self._change_pw_action = QAction("Change My Password...", self)
         self._change_pw_action.triggered.connect(self._open_change_my_password)
 
+        self._compact_view_action = QAction("Compact Task View", self)
+        self._compact_view_action.setCheckable(True)
+        self._compact_view_action.setChecked(self._compact_mode)
+        self._compact_view_action.triggered.connect(self._toggle_compact_view)
+
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
 
@@ -3957,6 +4073,7 @@ class MainWindow(QMainWindow):
             self.bulk_export_excel_action,
             self._data_location_action,
             self._financials_action,
+            self._compact_view_action,
         ]
 
         file_menu.addAction(self._login_action)
@@ -3984,6 +4101,7 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut(QKeySequence("F5"))
         refresh_action.triggered.connect(self.refresh_project_list)
         view_menu.addAction(refresh_action)
+        view_menu.addAction(self._compact_view_action)
 
         # ── Help menu ──────────────────────────────────────────────────────────
         help_menu = self.menuBar().addMenu("Help")
@@ -4082,7 +4200,7 @@ class MainWindow(QMainWindow):
             text_area.setPlainText("\n".join(lines))
             header.setText(f"Version History  ({len(releases)} release{'s' if len(releases) != 1 else ''})")
 
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             text_area.setPlainText(
                 f"Could not fetch release history.\n\nError: {exc}\n\n"
                 "You can view the full history at:\n"
@@ -4158,11 +4276,6 @@ class MainWindow(QMainWindow):
         focus_search_sc.triggered.connect(lambda: self.search_edit.setFocus())
         self.addAction(focus_search_sc)
 
-        focus_task_search_sc = QAction("Focus task search", self)
-        focus_task_search_sc.setShortcut(QKeySequence("Ctrl+Shift+F"))
-        focus_task_search_sc.triggered.connect(lambda: self.task_search_edit.setFocus())
-        self.addAction(focus_task_search_sc)
-
         export_sc = QAction("Export to Excel", self)
         export_sc.setShortcut(QKeySequence("Ctrl+E"))
         export_sc.triggered.connect(self.export_excel)
@@ -4179,9 +4292,7 @@ class MainWindow(QMainWindow):
         self.addAction(escape_sc)
 
     def _on_escape(self) -> None:
-        if hasattr(self, "task_search_edit") and self.task_search_edit.text():
-            self.task_search_edit.clear()
-        elif hasattr(self, "search_edit") and self.search_edit.text():
+        if hasattr(self, "search_edit") and self.search_edit.text():
             self.search_edit.clear()
 
     def _selected_task_id(self) -> Optional[int]:
@@ -4345,7 +4456,7 @@ class MainWindow(QMainWindow):
         booked_raw = project.booked_date or ""
         self.booked_value.setText(booked_raw.split("T")[0].split(" ")[0] or "—")
         self.contract_value_value.setText(
-            f"${float(project.contract_value):,.0f}" if project.contract_value else "—"
+            f"${parse_currency(project.contract_value):,.0f}" if project.contract_value else "—"
         )
         self.webpro_id_btn.setText(project.webpro_id or "—")
         self.webpro_id_btn.setEnabled(not self._current_user_view_only())
@@ -4445,19 +4556,6 @@ class MainWindow(QMainWindow):
 
     def populate_tasks(self) -> None:
         filtered_tasks = list(self.current_tasks)
-        selected_phase = self.phase_filter.currentText() if hasattr(self, "phase_filter") else "All phases"
-        search_text = self.task_search_edit.text().strip().casefold() if hasattr(self, "task_search_edit") else ""
-
-        if selected_phase and selected_phase != "All phases":
-            filtered_tasks = [task for task in filtered_tasks if task.phase == selected_phase]
-        if search_text:
-            filtered_tasks = [
-                task
-                for task in filtered_tasks
-                if search_text in task.task_name.casefold()
-                   or search_text in task.phase.casefold()
-                   or search_text in (task.notes or "").casefold()
-            ]
 
         col_keys = {
             0: lambda t: (0 if t.is_complete else 1),
@@ -4564,7 +4662,7 @@ class MainWindow(QMainWindow):
         """Create a new project from record, refresh list, update status. Returns True on success."""
         try:
             new_id = self.backend.create_project(record, include_default_tasks=True, task_template=task_template)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to create project", str(exc))
             return False
         self.current_project_id = new_id
@@ -4616,7 +4714,7 @@ class MainWindow(QMainWindow):
                 div25_url=record.div25_url,
                 webpro_id=record.webpro_id,
             )
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to update project", str(exc))
             return
         self.refresh_project_list()
@@ -4702,7 +4800,7 @@ class MainWindow(QMainWindow):
     def _process_email_import(self, eml_path: str) -> None:
         try:
             record, is_duplicate = self.backend.import_project_from_email(eml_path)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Email import failed", str(exc))
             return
 
@@ -4732,7 +4830,7 @@ class MainWindow(QMainWindow):
             if answer == QMessageBox.StandardButton.Yes and existing and existing.id is not None:
                 try:
                     self.backend.update_project_from_email(existing.id, record)
-                except Exception as exc:
+                except _EXPECTED_APP_ERRORS as exc:
                     QMessageBox.critical(self, "Update failed", str(exc))
                     return
                 self.current_project_id = existing.id
@@ -4771,7 +4869,7 @@ class MainWindow(QMainWindow):
             imported_project_id = self.backend.import_project_from_workbook(
                 file_path, task_template=template.lower()
             )
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
             return
         imported_project = self.backend.get_project(imported_project_id)
@@ -4799,7 +4897,7 @@ class MainWindow(QMainWindow):
             return
         try:
             output_path = self.backend.export_project_to_excel(self.current_project_id, file_path)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.status_bar.showMessage(f"Exported Excel report to {output_path}", 5000)
@@ -4817,7 +4915,7 @@ class MainWindow(QMainWindow):
             return
         try:
             output_path = self.backend.export_project_snapshot(self.current_project_id, file_path)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.status_bar.showMessage(f"Exported snapshot to {output_path}", 5000)
@@ -4841,7 +4939,7 @@ class MainWindow(QMainWindow):
             return
         try:
             output_path = self.backend.export_projects_to_excel(ids, file_path)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.status_bar.showMessage(f"Exported {len(ids)} project(s) to {output_path}", 6000)
@@ -4864,7 +4962,7 @@ class MainWindow(QMainWindow):
                 completed_date=data["completed_date"],
                 notes=data["notes"],
             )
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to add task", str(exc))
             return
         self.load_current_project()
@@ -4886,7 +4984,7 @@ class MainWindow(QMainWindow):
             new_notes = (data.get("notes") or "").strip()
             if new_notes and new_notes != old_notes:
                 self.backend.add_task_note(task_id, new_notes)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to update task", str(exc))
             return
         self.load_current_project()
@@ -4914,7 +5012,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.backend.set_task_completed(task_id, checked)
-        except Exception as exc:
+        except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to update task", str(exc))
             return
         self._refresh_stats_only()
@@ -4983,16 +5081,17 @@ class MainWindow(QMainWindow):
                     ids.append(int(task_id))
         return ids
 
-    def _toggle_compact_view(self) -> None:
-        self._compact_mode = self.compact_btn.isChecked()
+    def _toggle_compact_view(self, checked: Optional[bool] = None) -> None:
+        self._compact_mode = not self._compact_mode if checked is None else bool(checked)
+        if hasattr(self, "_compact_view_action"):
+            self._compact_view_action.setChecked(self._compact_mode)
         row_height = 24 if self._compact_mode else 36
         self.task_table.verticalHeader().setDefaultSectionSize(row_height)
         # Resize all existing rows
         for row_index in range(self.task_table.rowCount()):
             self.task_table.setRowHeight(row_index, row_height)
-        # Hide Notes column (col 5) in compact mode
-        self.task_table.setColumnHidden(5, self._compact_mode)
-        self.compact_btn.setText("⊞ Normal" if self._compact_mode else "⊟ Compact")
+        # Hide Notes column (col 4) in compact mode
+        self.task_table.setColumnHidden(4, self._compact_mode)
 
 
 # ── Theme ──────────────────────────────────────────────────────────────────────
@@ -5286,7 +5385,7 @@ class PendingDeletesDialog(QDialog):
             f"Permanently delete <b>{name}</b>?<br>This cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if reply == QMessageBox.StandardButton.Yes and rec.id is not None:
             self.backend.approve_pending_delete(rec.id)
             self._reload()
 
@@ -5294,23 +5393,28 @@ class PendingDeletesDialog(QDialog):
         rec = self._selected_pending()
         if rec is None:
             return
+        if rec.id is None:
+            return
         self.backend.reject_pending_delete(rec.id)
         self._reload()
 
 
 class AddressBookDialog(QDialog):
-    """Address book — all users can add/edit; deletion requires approver sign-off."""
+    """Address book with admin approval for deletion requests."""
 
     def __init__(
         self,
         backend: ProjectTrackerBackend,
         current_user: str,
+        can_approve_deletes: bool = False,
+        view_only: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.backend = backend
         self.current_user = current_user
-        self._is_approver = current_user.casefold() == ADDRESS_BOOK_APPROVER.casefold()
+        self._is_approver = can_approve_deletes
+        self._view_only = view_only
         self.setWindowTitle("Address Book")
         self.setModal(True)
         self.resize(780, 520)
@@ -5324,6 +5428,7 @@ class AddressBookDialog(QDialog):
         title.setObjectName("SectionTitle")
         title_row.addWidget(title, 1)
 
+        self._pending_btn: Optional[SecondaryButton]
         if self._is_approver:
             self._pending_btn = SecondaryButton("⚠ Review Pending Deletions")
             self._pending_btn.setToolTip("Review and approve or reject pending deletion requests")
@@ -5364,6 +5469,10 @@ class AddressBookDialog(QDialog):
             else "Immediately delete this entry"
         )
         self._delete_btn.clicked.connect(self._delete_entry)
+        if self._view_only:
+            for btn in (add_btn, self._edit_btn, self._delete_btn):
+                btn.setEnabled(False)
+                btn.setToolTip("Your account is view-only")
         btn_row.addWidget(add_btn)
         btn_row.addWidget(self._edit_btn)
         btn_row.addWidget(self._delete_btn)
@@ -5403,14 +5512,20 @@ class AddressBookDialog(QDialog):
         return self._records[row]
 
     def _add_entry(self) -> None:
+        if self._view_only:
+            return
         dlg = AddressEntryDialog(parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.backend.add_address(**dlg.values())
             self._reload()
 
     def _edit_entry(self) -> None:
+        if self._view_only:
+            return
         rec = self._selected_record()
         if rec is None:
+            return
+        if rec.id is None:
             return
         dlg = AddressEntryDialog(record=rec, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -5418,8 +5533,12 @@ class AddressBookDialog(QDialog):
             self._reload()
 
     def _delete_entry(self) -> None:
+        if self._view_only:
+            return
         rec = self._selected_record()
         if rec is None:
+            return
+        if rec.id is None:
             return
         name = rec.customer_name or rec.business_name or f"#{rec.id}"
         if self._is_approver:
@@ -5594,19 +5713,48 @@ def main() -> int:
     else:
         users_path = _app_data_path().parent / "users.json"
 
-    user_manager = UserManager(users_path)
+    try:
+        user_manager = UserManager(users_path)
+    except AuthStoreError as exc:
+        QMessageBox.critical(
+            None,
+            "User Database Error",
+            f"{exc}\n\nThe app cannot continue until the user database is repaired.",
+        )
+        return 1
     current_user = ""
 
-    if user_manager.has_any_users():
+    try:
+        has_users = user_manager.has_any_users()
+    except AuthStoreError as exc:
+        QMessageBox.critical(
+            None,
+            "User Database Error",
+            f"{exc}\n\nThe app cannot continue until the user database is repaired.",
+        )
+        return 1
+
+    if has_users:
         # Try remember-me session first
         auto_logged_in = False
         if _SESSION_PATH.exists():
             try:
                 session_data = json.loads(_SESSION_PATH.read_text(encoding="utf-8"))
                 remembered = session_data.get("username", "")
-                if remembered and user_manager.get_user(remembered):
-                    current_user = remembered
+                token = session_data.get("token", "")
+                remembered_user = user_manager.authenticate_session(remembered, token)
+                if remembered_user and not remembered_user.must_change_password:
+                    current_user = remembered_user.username
                     auto_logged_in = True
+                else:
+                    _SESSION_PATH.unlink(missing_ok=True)
+            except AuthStoreError as exc:
+                QMessageBox.critical(
+                    None,
+                    "User Database Error",
+                    f"{exc}\n\nThe app cannot continue until the user database is repaired.",
+                )
+                return 1
             except (OSError, ValueError, KeyError):
                 pass
 
@@ -5620,8 +5768,13 @@ def main() -> int:
             current_user = user.username
             # If first login, force password change
             if user.must_change_password:
-                chpw_dlg = ChangePasswordDialog(user_manager, current_user)
-                chpw_dlg.exec()  # They must complete this; closing is treated as done
+                if not _force_password_change(user_manager, current_user):
+                    QMessageBox.warning(
+                        None,
+                        "Password Change Required",
+                        "You must change your temporary password before continuing.",
+                    )
+                    return 0
     # If no users exist yet, the app opens without requiring login so the admin
     # can set up accounts via File > Manage Users.
 
