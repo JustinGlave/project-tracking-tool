@@ -35,7 +35,6 @@ SolidCompression=yes
 
 ; Wizard appearance
 WizardStyle=modern
-WizardResizable=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
