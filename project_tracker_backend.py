@@ -382,7 +382,7 @@ class ProjectTrackerBackend:
         self,
         project: ProjectRecord,
         include_default_tasks: bool = True,
-        task_template: str = "standard",
+        task_template: str = "phoenix",
     ) -> int:
         data = self._load_data()
         now = self._now_iso()
@@ -715,22 +715,107 @@ class ProjectTrackerBackend:
         self._save_data(data)
 
     def replace_project_tasks(self, project_id: int, task_template: str) -> None:
-        """Delete all tasks for a project and re-insert from the chosen template."""
+        """Sync a project to a task template while keeping entered task data."""
         task_list = PHOENIX_TASKS if task_template == "phoenix" else DEFAULT_TASKS
         data = self._load_data()
-        removed_task_ids = {
-            int(t["id"]) for t in data["tasks"]
-            if int(t["project_id"]) == project_id
-        }
-        data["tasks"] = [t for t in data["tasks"] if int(t["project_id"]) != project_id]
-        data["task_notes"] = [
-            note for note in data.get("task_notes", [])
-            if int(note.get("task_id", 0)) not in removed_task_ids
-        ]
         project = self._find_project_dict(data, project_id)
-        if project is not None:
-            project["updated_at"] = self._now_iso()
-        self._insert_default_tasks(data, project_id, task_list)
+        if project is None:
+            return
+
+        target_names = {
+            str(template_task["task_name"]).casefold()
+            for template_task in task_list
+        }
+        existing_project_tasks = [
+            task for task in data["tasks"]
+            if int(task["project_id"]) == project_id
+        ]
+        other_project_tasks = [
+            task for task in data["tasks"]
+            if int(task["project_id"]) != project_id
+        ]
+        tasks_with_history = {
+            int(note.get("task_id", 0))
+            for note in data.get("task_notes", [])
+        }
+
+        preserved_by_name: dict[str, dict[str, Any]] = {}
+        extra_preserved: list[dict[str, Any]] = []
+        removed_task_ids: set[int] = set()
+
+        for task in existing_project_tasks:
+            task_id = int(task["id"])
+            task_name = str(task.get("task_name", ""))
+            task_key = task_name.casefold()
+            has_entries = self._task_has_entries(task, tasks_with_history)
+            if task_key in target_names:
+                existing_preserved = preserved_by_name.get(task_key)
+                if existing_preserved is None:
+                    preserved_by_name[task_key] = task
+                elif (
+                    has_entries
+                    and not self._task_has_entries(existing_preserved, tasks_with_history)
+                ):
+                    removed_task_ids.add(int(existing_preserved["id"]))
+                    preserved_by_name[task_key] = task
+                else:
+                    removed_task_ids.add(task_id)
+            elif has_entries:
+                extra_preserved.append(task)
+            else:
+                removed_task_ids.add(task_id)
+
+        synced_project_tasks: list[dict[str, Any]] = []
+        used_task_ids: set[int] = set()
+        for index, template_task in enumerate(task_list, start=1):
+            task_name = str(template_task["task_name"])
+            task_key = task_name.casefold()
+            preserved_task = preserved_by_name.get(task_key)
+            if preserved_task is not None:
+                preserved_task["task_name"] = task_name
+                preserved_task["phase"] = template_task["phase"]
+                preserved_task["sort_order"] = index
+                used_task_ids.add(int(preserved_task["id"]))
+                synced_project_tasks.append(preserved_task)
+                continue
+
+            new_task_id = int(data["next_task_id"])
+            synced_project_tasks.append(
+                {
+                    "id": new_task_id,
+                    "project_id": project_id,
+                    "task_name": task_name,
+                    "phase": template_task["phase"],
+                    "sort_order": index,
+                    "completed_date": None,
+                    "is_complete": False,
+                    "notes": "",
+                }
+            )
+            data["next_task_id"] = new_task_id + 1
+
+        next_sort_order = len(task_list) + 1
+        for task in sorted(
+            extra_preserved,
+            key=lambda item: (int(item.get("sort_order", 0)), str(item.get("task_name", "")).casefold()),
+        ):
+            task_id = int(task["id"])
+            if task_id in used_task_ids:
+                continue
+            task["sort_order"] = next_sort_order
+            next_sort_order += 1
+            used_task_ids.add(task_id)
+            synced_project_tasks.append(task)
+
+        data["tasks"] = other_project_tasks + synced_project_tasks
+        if removed_task_ids:
+            data["task_notes"] = [
+                note for note in data.get("task_notes", [])
+                if int(note.get("task_id", 0)) not in removed_task_ids
+            ]
+
+        project["updated_at"] = self._now_iso()
+        project["updated_by"] = self.current_user
         self._save_data(data)
 
     def list_tasks(self, project_id: int, phase: Optional[str] = None) -> list[TaskRecord]:
@@ -968,7 +1053,7 @@ class ProjectTrackerBackend:
         workbook_path: str | Path,
         sheet_name: Optional[str] = None,
         create_missing_tasks: bool = True,
-        task_template: str = "standard",
+        task_template: str = "phoenix",
     ) -> int:
         workbook_file = Path(workbook_path)
         workbook = load_workbook(workbook_file, data_only=True)
@@ -1822,6 +1907,16 @@ class ProjectTrackerBackend:
         }
 
     # ---------- internal helpers ----------
+
+    @staticmethod
+    def _task_has_entries(task: dict[str, Any], tasks_with_history: set[int]) -> bool:
+        task_id = int(task.get("id", 0))
+        return (
+            bool(task.get("is_complete"))
+            or bool(task.get("completed_date"))
+            or bool(str(task.get("notes", "")).strip())
+            or task_id in tasks_with_history
+        )
 
     @staticmethod
     def _insert_default_tasks(

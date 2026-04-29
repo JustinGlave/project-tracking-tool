@@ -238,8 +238,8 @@ class ProjectDialog(QDialog):
         self.webpro_id_edit         = QLineEdit(project.webpro_id if project else "")
 
         self.template_combo = QComboBox()
-        self.template_combo.addItem("Standard", "standard")
         self.template_combo.addItem("Phoenix", "phoenix")
+        self.template_combo.addItem("Standard", "standard")
         # Only shown when creating a new project (no existing project passed in)
         self.template_combo.setVisible(project is None)
 
@@ -2683,6 +2683,7 @@ class MainWindow(QMainWindow):
         self._sort_column: Optional[int] = None
         self._sort_ascending: bool = True
         self._task_status_filter: str = "all"
+        self._task_select_mode: bool = False
         self._div25_url: str = ""
         self._show_test_jobs: bool = False
         self._compact_mode: bool = False
@@ -3253,38 +3254,48 @@ class MainWindow(QMainWindow):
                 btn.setToolTip(tip)
             return btn
 
-        self.notes_btn = _toolbar_btn("Notes", 76, "Open job progress notes")
+        self.notes_btn = _toolbar_btn("📝 Notes", 96, "Open job progress notes")
         self.notes_btn.clicked.connect(self._open_notes)
         top_row.addWidget(self.notes_btn)
 
-        self.co_btn = _toolbar_btn("CO Log", 84, "Open change order log")
+        self.co_btn = _toolbar_btn("🚀 CO Log", 108, "Open change order log")
         self.co_btn.clicked.connect(self._open_change_orders)
         top_row.addWidget(self.co_btn)
 
-        self.project_info_btn = _toolbar_btn("Info", 64, "View all project details")
+        self.project_info_btn = _toolbar_btn("ℹ️ Info", 86, "View all project details")
         self.project_info_btn.clicked.connect(self._show_project_info)
         top_row.addWidget(self.project_info_btn)
 
-        self.financials_btn = _toolbar_btn("Financials", 100, "View financial data from ODIN")
+        self.financials_btn = _toolbar_btn("💰 Financials", 122, "View financial data from ODIN")
         self.financials_btn.clicked.connect(self._open_financials)
         top_row.addWidget(self.financials_btn)
 
-        self.activity_log_btn = _toolbar_btn("Activity", 90, "View activity log for this project")
+        self.activity_log_btn = _toolbar_btn("📜 Activity", 106, "View activity log for this project")
         self.activity_log_btn.clicked.connect(self._open_activity_log)
         top_row.addWidget(self.activity_log_btn)
 
         top_row.addStretch(1)
 
-        self.add_task_btn = _toolbar_btn("Add Task", 96, cls=PrimaryButton)
+        self.add_task_btn = _toolbar_btn("Add Task", 96, "Add a custom task", cls=PrimaryButton)
         self.add_task_btn.clicked.connect(self.add_task)
         top_row.addWidget(self.add_task_btn)
 
+        self.task_select_btn = _toolbar_btn("☑ Select", 90, "Select multiple tasks")
+        self.task_select_btn.clicked.connect(self._toggle_task_select_mode)
+        top_row.addWidget(self.task_select_btn)
+
+        self.task_delete_selected_btn = _toolbar_btn("🗑 Delete Selected", 148, "Delete selected tasks", cls=PrimaryButton)
+        self.task_delete_selected_btn.clicked.connect(self.delete_selected_tasks)
+        self.task_delete_selected_btn.setVisible(False)
+        self.task_delete_selected_btn.setEnabled(False)
+        top_row.addWidget(self.task_delete_selected_btn)
+
         self.task_tools_btn = QToolButton()
-        self.task_tools_btn.setText("Tools")
+        self.task_tools_btn.setText("🛠 Tools")
         self.task_tools_btn.setObjectName("taskToolsButton")
         self.task_tools_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.task_tools_btn.setToolTip("Task tools")
-        self.task_tools_btn.setFixedWidth(78)
+        self.task_tools_btn.setFixedWidth(94)
         self.task_tools_btn.setMinimumHeight(36)
         self.task_tools_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.task_tools_btn.setSizePolicy(_fixed_sp)
@@ -3352,6 +3363,7 @@ class MainWindow(QMainWindow):
         self.task_table.rowsReordered.connect(self._on_tasks_reordered)
         self.task_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.task_table.customContextMenuRequested.connect(self._on_task_context_menu)
+        self.task_table.selectionModel().selectionChanged.connect(self._update_task_selection_actions)
 
         wrapper_layout.addWidget(self.task_table, 1)
         return wrapper
@@ -3420,8 +3432,10 @@ class MainWindow(QMainWindow):
             return
         confirm = QMessageBox.question(
             self,
-            "Replace tasks?",
-            f"This will delete ALL current tasks and replace them with the {template_name} template.\n\nContinue?",
+            "Apply task template?",
+            f"This will sync the task list to the {template_name} template.\n\n"
+            "Tasks with completions, notes, or task-note history will be kept. "
+            "Blank tasks that are not in the selected template will be removed.\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
@@ -3745,16 +3759,18 @@ class MainWindow(QMainWindow):
             stat = backup.stat()
             modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %I:%M %p")
             size_kb = max(1, round(stat.st_size / 1024))
-            item = QListWidgetItem(f"{modified}    {size_kb:,} KB    {backup.name}")
-            item.setData(Qt.ItemDataRole.UserRole, str(backup))
-            backup_list.addItem(item)
+            backup_item = QListWidgetItem(f"{modified}    {size_kb:,} KB    {backup.name}")
+            backup_item.setData(Qt.ItemDataRole.UserRole, str(backup))
+            backup_list.addItem(backup_item)
 
         def update_preview() -> None:
-            item = backup_list.currentItem()
-            if item is None:
+            selected_backup_item = backup_list.currentItem()
+            if selected_backup_item is None:
                 preview.clear()
                 return
-            preview.setPlainText(self._backup_preview_text(Path(item.data(Qt.ItemDataRole.UserRole))))
+            preview.setPlainText(
+                self._backup_preview_text(Path(selected_backup_item.data(Qt.ItemDataRole.UserRole)))
+            )
 
         backup_list.currentRowChanged.connect(lambda _row: update_preview())
         backup_list.setCurrentRow(0)
@@ -4228,6 +4244,10 @@ class MainWindow(QMainWindow):
         self.import_email_btn.setEnabled(True)
         self.import_email_btn.setToolTip("Import project from Odin assignment email (.eml)")
         self.add_task_btn.setEnabled(True)
+        self.task_select_btn.setEnabled(True)
+        self.task_select_btn.setToolTip("Select multiple tasks")
+        self.task_delete_selected_btn.setToolTip("Delete selected tasks")
+        self._set_task_select_mode(False, quiet=True)
         self.notes_btn.setEnabled(True)
         self.notes_btn.setToolTip("Open job progress notes")
         self.co_btn.setEnabled(True)
@@ -4303,9 +4323,11 @@ class MainWindow(QMainWindow):
     def _apply_view_only_restrictions(self) -> None:
         """Disable all data-modification controls for view-only users."""
         tip = "Your account is view-only"
+        self._set_task_select_mode(False, quiet=True)
         for btn in (
             self.new_project_btn, self.edit_project_btn, self.delete_project_btn,
             self.pin_project_btn, self.import_btn, self.import_email_btn, self.add_task_btn,
+            self.task_select_btn, self.task_delete_selected_btn,
             self.notes_btn, self.co_btn, self.task_tools_btn,
         ):
             btn.setEnabled(False)
@@ -4616,8 +4638,94 @@ class MainWindow(QMainWindow):
         self.addAction(escape_sc)
 
     def _on_escape(self) -> None:
+        if getattr(self, "_task_select_mode", False):
+            self._set_task_select_mode(False)
+            return
         if hasattr(self, "search_edit") and self.search_edit.text():
             self.search_edit.clear()
+
+    def _toggle_task_select_mode(self) -> None:
+        self._set_task_select_mode(not self._task_select_mode)
+
+    def _set_task_select_mode(self, enabled: bool, quiet: bool = False) -> None:
+        if self._current_user_view_only() and enabled:
+            return
+
+        self._task_select_mode = bool(enabled)
+        if not hasattr(self, "task_table"):
+            return
+
+        self.task_table.clearSelection()
+        self.task_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+            if self._task_select_mode
+            else QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.task_table.setDragEnabled(not self._task_select_mode and not self._current_user_view_only())
+        self._set_task_done_checkboxes_enabled(not self._task_select_mode and not self._current_user_view_only())
+
+        if hasattr(self, "task_select_btn"):
+            self.task_select_btn.setText("Cancel" if self._task_select_mode else "☑ Select")
+            if not self._current_user_view_only():
+                self.task_select_btn.setToolTip(
+                    "Cancel task selection" if self._task_select_mode else "Select multiple tasks"
+                )
+        if hasattr(self, "add_task_btn"):
+            self.add_task_btn.setVisible(not self._task_select_mode)
+        if hasattr(self, "task_tools_btn"):
+            self.task_tools_btn.setVisible(not self._task_select_mode)
+        if hasattr(self, "task_delete_selected_btn"):
+            self.task_delete_selected_btn.setVisible(self._task_select_mode)
+        self._update_task_selection_actions()
+
+        if not quiet and hasattr(self, "status_bar"):
+            if self._task_select_mode:
+                self.status_bar.showMessage("Select one or more tasks, then click Delete Selected", 4000)
+            else:
+                self.status_bar.showMessage("Task selection canceled", 2500)
+
+    def _set_task_done_checkboxes_enabled(self, enabled: bool) -> None:
+        if not hasattr(self, "task_table"):
+            return
+        for row_index in range(self.task_table.rowCount()):
+            cell_widget = self.task_table.cellWidget(row_index, 0)
+            checkbox = cell_widget.findChild(QCheckBox) if cell_widget is not None else None
+            if checkbox is not None:
+                checkbox.setEnabled(enabled)
+
+    def _selected_task_ids(self) -> list[int]:
+        rows: list[int] = []
+        selection_model = self.task_table.selectionModel()
+        if selection_model is not None:
+            rows = [index.row() for index in selection_model.selectedRows()]
+        if not rows and not self._task_select_mode and self.task_table.currentRow() >= 0:
+            rows = [self.task_table.currentRow()]
+
+        ids: list[int] = []
+        seen: set[int] = set()
+        for row in sorted(set(rows)):
+            item = self.task_table.item(row, 1)
+            if item is None:
+                continue
+            task_id = item.data(Qt.ItemDataRole.UserRole)
+            if task_id is None:
+                continue
+            task_id_int = int(task_id)
+            if task_id_int in seen:
+                continue
+            seen.add(task_id_int)
+            ids.append(task_id_int)
+        return ids
+
+    def _update_task_selection_actions(self, *_args: Any) -> None:
+        if not hasattr(self, "task_delete_selected_btn"):
+            return
+        selected_count = len(self._selected_task_ids()) if self._task_select_mode else 0
+        self.task_delete_selected_btn.setEnabled(selected_count > 0 and not self._current_user_view_only())
+        if selected_count:
+            self.task_delete_selected_btn.setText(f"🗑 Delete ({selected_count})")
+        else:
+            self.task_delete_selected_btn.setText("🗑 Delete Selected")
 
     def _selected_task_id(self) -> Optional[int]:
         row = self.task_table.currentRow()
@@ -4629,6 +4737,9 @@ class MainWindow(QMainWindow):
         return item.data(Qt.ItemDataRole.UserRole)
 
     def _delete_selected_task(self) -> None:
+        if getattr(self, "_task_select_mode", False):
+            self.delete_selected_tasks()
+            return
         task_id = self._selected_task_id()
         if task_id is not None:
             self.delete_task(task_id)
@@ -4639,6 +4750,8 @@ class MainWindow(QMainWindow):
             self.edit_task(task_id)
 
     def _on_task_double_clicked(self) -> None:
+        if getattr(self, "_task_select_mode", False):
+            return
         self._edit_selected_task()
 
     def _toggle_sort_direction(self) -> None:
@@ -4791,6 +4904,7 @@ class MainWindow(QMainWindow):
         if not self._current_user_view_only():
             self._update_pin_button(project.pinned)
 
+        self._set_task_select_mode(False, quiet=True)
         self.current_tasks = self.backend.list_tasks(self.current_project_id)
         self._refresh_stats_only()
         self.populate_tasks()
@@ -4829,6 +4943,7 @@ class MainWindow(QMainWindow):
         self.div25_btn.setToolTip("No Div25 URL")
         self._update_pin_button(False)
         self.project_notes.clear()
+        self._set_task_select_mode(False, quiet=True)
         self.total_tasks_card.set_value("0")
         self.completed_card.set_value("0")
         self.pending_card.set_value("0")
@@ -4927,7 +5042,7 @@ class MainWindow(QMainWindow):
             for row_index, task in enumerate(filtered_tasks):
                 checkbox = QCheckBox()
                 checkbox.setChecked(task.is_complete)
-                if self._current_user_view_only():
+                if self._current_user_view_only() or self._task_select_mode:
                     checkbox.setEnabled(False)
                 else:
                     checkbox.toggled.connect(
@@ -4958,6 +5073,7 @@ class MainWindow(QMainWindow):
 
         finally:
             self._populating = False
+        self._update_task_selection_actions()
 
     def _on_task_context_menu(self, pos) -> None:
         menu = QMenu(self)
@@ -4967,6 +5083,12 @@ class MainWindow(QMainWindow):
         menu.addAction(add_action)
 
         if not self._current_user_view_only():
+            if self._task_select_mode and self._selected_task_ids():
+                menu.addSeparator()
+                delete_selected_action = QAction("Delete Selected Tasks", self)
+                delete_selected_action.triggered.connect(self.delete_selected_tasks)
+                menu.addAction(delete_selected_action)
+
             item = self.task_table.itemAt(pos)
             row = self.task_table.rowAt(pos.y()) if item is None else item.row()
             task_id = None
@@ -5016,7 +5138,7 @@ class MainWindow(QMainWindow):
         row_layout.addStretch(1)
         return container
 
-    def _save_new_project(self, record: ProjectRecord, status_msg: str = "", task_template: str = "standard") -> bool:
+    def _save_new_project(self, record: ProjectRecord, status_msg: str = "", task_template: str = "phoenix") -> bool:
         """Create a new project from record, refresh list, update status. Returns True on success."""
         try:
             new_id = self.backend.create_project(record, include_default_tasks=True, task_template=task_template)
@@ -5213,7 +5335,7 @@ class MainWindow(QMainWindow):
             return
         template, ok = QInputDialog.getItem(
             self, "Import Workbook", "Task template:",
-            ["Standard", "Phoenix"], 0, False,
+            ["Phoenix", "Standard"], 0, False,
         )
         if not ok:
             return
@@ -5364,6 +5486,54 @@ class MainWindow(QMainWindow):
         self.backend.delete_task(task_id)
         self.load_current_project()
         self.status_bar.showMessage("Task deleted", 4000)
+
+    def delete_selected_tasks(self) -> None:
+        if self._current_user_view_only():
+            return
+        task_ids = self._selected_task_ids()
+        if not task_ids:
+            QMessageBox.information(self, "No tasks selected", "Select one or more tasks to delete.")
+            return
+
+        tasks_by_id = {
+            int(task.id): task
+            for task in self.current_tasks
+            if task.id is not None
+        }
+        task_names = [
+            tasks_by_id[task_id].task_name
+            for task_id in task_ids
+            if task_id in tasks_by_id
+        ]
+        preview_names = "\n".join(f"• {name}" for name in task_names[:5])
+        more_count = len(task_names) - 5
+        if more_count > 0:
+            preview_names += f"\n• ...and {more_count} more"
+
+        prompt = f"Delete {len(task_ids)} selected task(s)?"
+        if preview_names:
+            prompt += f"\n\n{preview_names}"
+        answer = QMessageBox.question(
+            self, "Delete selected tasks", prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted_count = 0
+        try:
+            for task_id in task_ids:
+                self.backend.delete_task(task_id)
+                deleted_count += 1
+        except _EXPECTED_APP_ERRORS as exc:
+            QMessageBox.critical(self, "Unable to delete tasks", str(exc))
+        finally:
+            self._set_task_select_mode(False, quiet=True)
+            self.load_current_project()
+
+        if deleted_count:
+            self.status_bar.showMessage(f"Deleted {deleted_count} task(s)", 4000)
 
     def toggle_task(self, task_id: int, checked: bool) -> None:
         if self._populating or self._current_user_view_only():

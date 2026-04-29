@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.2**
+**Current Version: v1.8.3**
 
 ---
 
@@ -33,6 +33,15 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder, with admin restore available from the File menu
 - Auto-updates — when a new version is released, the app notifies you and installs the full app package with one click
+
+---
+
+## What's New in v1.8.3
+
+- Restored emoji labels on the project task bar
+- Added task select mode for deleting multiple selected tasks at once
+- Task template switching now preserves completed tasks, inline notes, and task-note history
+- Phoenix is now the default task template for new projects and workbook imports
 
 ---
 
@@ -86,9 +95,9 @@ No Python or other software required.
 ### Creating a New Job
 
 1. Click **New** in the sidebar (or **File → New Project**)
-2. Select a **Task Template**:
-   - **Standard** — full default task list
+2. Select a **Task Template** (Phoenix is selected by default):
    - **Phoenix** — streamlined list for Phoenix jobs (excludes tasks not applicable)
+   - **Standard** — full default task list
 3. Fill in job details (Job Name and Job Number are required)
 4. Click **OK** — the job is created with the selected task list pre-loaded
 
@@ -99,9 +108,9 @@ If you selected the wrong template when creating a job, you can reset it:
 1. Select the job in the sidebar
 2. In the task bar, click **Tools**
 3. Choose **Apply Standard Template** or **Apply Phoenix Template**
-4. Confirm the prompt — all current tasks will be replaced with the selected template
+4. Confirm the prompt — the task list is synced to the selected template
 
-> **Note:** This replaces all tasks. Any completed tasks or custom tasks will be lost.
+> **Note:** Completed tasks, task notes, and task history are preserved. Blank tasks that are not part of the selected template are removed.
 
 ### Home Dashboard
 
@@ -117,6 +126,7 @@ Click any project in the sidebar to open it; click an empty area of the sidebar 
 
 - Click **Add Task** to add a custom task
 - Check the **Done** checkbox on any row to mark a task complete
+- Click **☑ Select** to select multiple task rows, then click **🗑 Delete Selected** to remove them with one confirmation
 - **Right-click** any task row for a context menu — **Add Task**, **Edit Task**, **Delete Task**, **Notes History**
 - **Drag rows** to reorder tasks within the list
 - Sort tasks by clicking any column header
@@ -142,7 +152,7 @@ Each task maintains a timestamped note thread separate from the single inline No
 | **Ctrl+E** | Export to Excel (current project) |
 | **Ctrl+Shift+E** | Bulk export to Excel |
 | **Escape** | Clear the active search box |
-| **Delete** | Delete selected task |
+| **Delete** | Delete selected task(s) |
 | **Enter / Return** | Edit selected task |
 
 ### Pinning a Project

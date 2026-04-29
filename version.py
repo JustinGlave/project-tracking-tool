@@ -3,4 +3,4 @@
 #   MAJOR — breaking changes or full redesigns
 #   MINOR — new features
 #   PATCH — bug fixes / small tweaks
-__version__ = "1.8.2"
+__version__ = "1.8.3"

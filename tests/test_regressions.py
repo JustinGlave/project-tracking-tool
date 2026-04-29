@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from project_tracker_backend import (
-    DEFAULT_TASKS,
+    PHOENIX_TASKS,
     ProjectRecord,
     ProjectTrackerBackend,
     parse_currency,
@@ -138,12 +138,24 @@ class BackendRegressionTests(TempWorkspaceTest):
         stats = backend.get_dashboard_stats()
 
         self.assertEqual(stats["project_count"], 1)
-        self.assertEqual(stats["total_tasks"], len(DEFAULT_TASKS))
-        self.assertEqual(stats["incomplete_count"], len(DEFAULT_TASKS))
+        self.assertEqual(stats["total_tasks"], len(PHOENIX_TASKS))
+        self.assertEqual(stats["incomplete_count"], len(PHOENIX_TASKS))
+
+    def test_new_projects_default_to_phoenix_template(self) -> None:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        project_id = backend.create_project(ProjectRecord(job_name="Job", job_number="J"))
+
+        expected_names = {task["task_name"] for task in PHOENIX_TASKS}
+        actual_names = {task.task_name for task in backend.list_tasks(project_id)}
+
+        self.assertEqual(actual_names, expected_names)
 
     def test_deleting_task_removes_task_notes(self) -> None:
         backend = ProjectTrackerBackend(self.tmp / "data.json")
-        project_id = backend.create_project(ProjectRecord(job_name="Job", job_number="J"))
+        project_id = backend.create_project(
+            ProjectRecord(job_name="Job", job_number="J"),
+            task_template="standard",
+        )
         task = backend.list_tasks(project_id)[0]
         task_id = task.id
         assert task_id is not None
@@ -153,17 +165,74 @@ class BackendRegressionTests(TempWorkspaceTest):
 
         self.assertEqual(backend.list_task_notes(task_id), [])
 
-    def test_replacing_tasks_removes_old_task_notes(self) -> None:
+    def test_replacing_tasks_removes_blank_tasks_not_in_target_template(self) -> None:
         backend = ProjectTrackerBackend(self.tmp / "data.json")
-        project_id = backend.create_project(ProjectRecord(job_name="Job", job_number="J"))
-        old_task = backend.list_tasks(project_id)[0]
-        old_task_id = old_task.id
-        assert old_task_id is not None
+        project_id = backend.create_project(
+            ProjectRecord(job_name="Job", job_number="J"),
+            task_template="standard",
+        )
 
-        backend.add_task_note(old_task_id, "note")
         backend.replace_project_tasks(project_id, "phoenix")
 
-        self.assertEqual(backend.list_task_notes(old_task_id), [])
+        phoenix_names = {task["task_name"] for task in PHOENIX_TASKS}
+        actual_names = {task.task_name for task in backend.list_tasks(project_id)}
+        self.assertTrue(actual_names.issubset(phoenix_names))
+
+    def test_replacing_tasks_preserves_completed_and_noted_tasks(self) -> None:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        project_id = backend.create_project(
+            ProjectRecord(job_name="Job", job_number="J"),
+            task_template="standard",
+        )
+        noted_excluded_task = next(
+            task for task in backend.list_tasks(project_id)
+            if task.task_name == "Job Plan Developed"
+        )
+        completed_excluded_task = next(
+            task for task in backend.list_tasks(project_id)
+            if task.task_name == "Service Turnover"
+        )
+        shared_task = next(
+            task for task in backend.list_tasks(project_id)
+            if task.task_name == "Phoenix Material Submittal"
+        )
+        assert noted_excluded_task.id is not None
+        assert completed_excluded_task.id is not None
+        assert shared_task.id is not None
+
+        backend.add_task_note(noted_excluded_task.id, "kept history")
+        backend.set_task_completed(completed_excluded_task.id, True, "2026-04-01")
+        backend.update_task(shared_task.id, notes="kept inline note")
+
+        backend.replace_project_tasks(project_id, "phoenix")
+        tasks_after_phoenix = {task.task_name: task for task in backend.list_tasks(project_id)}
+
+        self.assertIn("Job Plan Developed", tasks_after_phoenix)
+        self.assertIn("Service Turnover", tasks_after_phoenix)
+        self.assertTrue(tasks_after_phoenix["Service Turnover"].is_complete)
+        self.assertEqual(tasks_after_phoenix["Service Turnover"].completed_date, "2026-04-01")
+        self.assertEqual(
+            [note.content for note in backend.list_task_notes(noted_excluded_task.id)],
+            ["kept history"],
+        )
+        self.assertEqual(
+            tasks_after_phoenix["Phoenix Material Submittal"].notes,
+            "kept inline note",
+        )
+
+        backend.replace_project_tasks(project_id, "standard")
+        tasks_after_standard = {task.task_name: task for task in backend.list_tasks(project_id)}
+
+        self.assertTrue(tasks_after_standard["Service Turnover"].is_complete)
+        self.assertEqual(tasks_after_standard["Service Turnover"].completed_date, "2026-04-01")
+        self.assertEqual(
+            [note.content for note in backend.list_task_notes(noted_excluded_task.id)],
+            ["kept history"],
+        )
+        self.assertEqual(
+            tasks_after_standard["Phoenix Material Submittal"].notes,
+            "kept inline note",
+        )
 
 
 class UpdaterRegressionTests(TempWorkspaceTest):
