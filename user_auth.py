@@ -59,8 +59,6 @@ class UserRecord:
     must_change_password: bool = False
     created_at: str = ""
     role: str = "user"  # "admin", "user", or "view_only"
-    session_token_hash: str = ""
-    session_token_expires_at: str = ""
 
 
 class UserManager:
@@ -68,6 +66,7 @@ class UserManager:
 
     def __init__(self, users_path: Path) -> None:
         self._path = users_path
+        self._session_path = users_path.with_name("user_sessions.json")
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._auto_migrate_admin()
 
@@ -140,9 +139,8 @@ class UserManager:
         data[key]["salt"] = salt
         data[key]["password_hash"] = _hash_password(new_password, salt)
         data[key]["must_change_password"] = False
-        data[key]["session_token_hash"] = ""
-        data[key]["session_token_expires_at"] = ""
         self._save(data)
+        self.clear_session_token(username)
 
     def delete_user(self, username: str) -> None:
         data = self._load()
@@ -155,6 +153,7 @@ class UserManager:
                 raise ValueError("Cannot delete the only administrator account.")
         del data[key]
         self._save(data)
+        self.clear_session_token(username)
 
     def get_user(self, username: str) -> Optional[UserRecord]:
         data = self._load()
@@ -193,9 +192,12 @@ class UserManager:
         if key is None:
             raise ValueError(f"User '{username}' not found.")
         token = secrets.token_urlsafe(32)
-        data[key]["session_token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        data[key]["session_token_expires_at"] = _session_expiry_iso()
-        self._save(data)
+        sessions = self._load_sessions()
+        sessions[key] = {
+            "token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            "expires_at": _session_expiry_iso(),
+        }
+        self._save_sessions(sessions)
         return token
 
     def authenticate_session(self, username: str, token: str) -> Optional[UserRecord]:
@@ -207,25 +209,28 @@ class UserManager:
         if key is None:
             return None
         match = data[key]
-        expected = str(match.get("session_token_hash", ""))
+        sessions = self._load_sessions()
+        session_key = next((k for k in sessions if k.casefold() == key.casefold()), None)
+        if session_key is None:
+            return None
+        session = sessions[session_key]
+        expected = str(session.get("token_hash", ""))
         supplied = hashlib.sha256(token.encode("utf-8")).hexdigest()
         if not expected or not secrets.compare_digest(expected, supplied):
             return None
-        if _session_is_expired(str(match.get("session_token_expires_at", ""))):
-            data[key]["session_token_hash"] = ""
-            data[key]["session_token_expires_at"] = ""
-            self._save(data)
+        if _session_is_expired(str(session.get("expires_at", ""))):
+            del sessions[session_key]
+            self._save_sessions(sessions)
             return None
         return UserRecord(**match)
 
     def clear_session_token(self, username: str) -> None:
-        data = self._load()
-        key = next((k for k in data if k.casefold() == username.casefold()), None)
+        sessions = self._load_sessions()
+        key = next((k for k in sessions if k.casefold() == username.casefold()), None)
         if key is None:
             return
-        data[key]["session_token_hash"] = ""
-        data[key]["session_token_expires_at"] = ""
-        self._save(data)
+        del sessions[key]
+        self._save_sessions(sessions)
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -245,7 +250,8 @@ class UserManager:
             return
 
         changed = False
-        for val in raw.values():
+        migrated_sessions: dict[str, dict[str, str]] = {}
+        for key, val in raw.items():
             if not isinstance(val, dict):
                 raise AuthStoreError(f"User database has an invalid record: {self._path}")
             if "role" not in val:
@@ -256,12 +262,17 @@ class UserManager:
                 # Remove legacy field if it still lingers
                 if val.pop("is_admin", None) is not None:
                     changed = True
-            if "session_token_hash" not in val:
-                val["session_token_hash"] = ""
+            token_hash = val.pop("session_token_hash", None)
+            expires_at = val.pop("session_token_expires_at", None)
+            if token_hash is not None or expires_at is not None:
                 changed = True
-            if "session_token_expires_at" not in val:
-                val["session_token_expires_at"] = ""
-                changed = True
+            token_hash_text = str(token_hash or "")
+            expires_at_text = str(expires_at or "")
+            if token_hash_text and not _session_is_expired(expires_at_text):
+                migrated_sessions[key] = {
+                    "token_hash": token_hash_text,
+                    "expires_at": expires_at_text,
+                }
 
         # Ensure at least one admin
         if not any(v.get("role") == "admin" for v in raw.values()):
@@ -272,6 +283,10 @@ class UserManager:
 
         if changed:
             self._save(raw)
+        if migrated_sessions:
+            sessions = self._load_sessions()
+            sessions.update(migrated_sessions)
+            self._save_sessions(sessions)
 
     def _load(self) -> dict:
         if not self._path.exists():
@@ -288,8 +303,8 @@ class UserManager:
                     val["role"] = "admin" if val.pop("is_admin", False) else "user"
                 else:
                     val.pop("is_admin", None)
-                val.setdefault("session_token_hash", "")
-                val.setdefault("session_token_expires_at", "")
+                val.pop("session_token_hash", None)
+                val.pop("session_token_expires_at", None)
             return data
         except AuthStoreError:
             raise
@@ -309,4 +324,39 @@ class UserManager:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
                 logger.exception("Failed to remove temporary users file: %s", tmp_path)
+            raise
+
+    def _load_sessions(self) -> dict:
+        if not self._session_path.exists():
+            return {}
+        try:
+            data = json.loads(self._session_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to load user sessions file: %s", self._session_path)
+            return {}
+        if not isinstance(data, dict):
+            logger.warning("Ignoring invalid user sessions file: %s", self._session_path)
+            return {}
+        sessions = {}
+        for key, val in data.items():
+            if not isinstance(val, dict):
+                continue
+            token_hash = str(val.get("token_hash", ""))
+            expires_at = str(val.get("expires_at", ""))
+            if token_hash and expires_at:
+                sessions[str(key)] = {"token_hash": token_hash, "expires_at": expires_at}
+        return sessions
+
+    def _save_sessions(self, data: dict) -> None:
+        tmp_fd, tmp_str = tempfile.mkstemp(dir=self._session_path.parent, suffix=".tmp")
+        tmp_path = Path(tmp_str)
+        try:
+            with open(tmp_fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+            tmp_path.replace(self._session_path)
+        except (OSError, TypeError, ValueError):
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.exception("Failed to remove temporary sessions file: %s", tmp_path)
             raise

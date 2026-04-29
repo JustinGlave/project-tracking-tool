@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.0**
+**Current Version: v1.8.1**
 
 ---
 
@@ -33,6 +33,14 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder
 - Auto-updates — when a new version is released, the app notifies you and installs it with one click
+
+---
+
+## What's New in v1.8.1
+
+- Moved remember-me token hashes out of `users.json` into `user_sessions.json`
+- Cleans v1.8.0 session-token fields from `users.json` on startup so older app builds can still read the user database
+- Preserves valid v1.8.0 remember-me sessions during that cleanup
 
 ---
 

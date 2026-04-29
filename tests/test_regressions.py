@@ -45,6 +45,9 @@ class AuthRegressionTests(TempWorkspaceTest):
         manager.create_user("alice", "password123")
 
         token = manager.create_session_token("alice")
+        user_data = json.loads(users_path.read_text(encoding="utf-8"))
+        self.assertNotIn("session_token_hash", user_data["alice"])
+        self.assertNotIn("session_token_expires_at", user_data["alice"])
         self.assertIsNotNone(manager.authenticate_session("alice", token))
         self.assertIsNone(manager.authenticate_session("alice", "not-the-token"))
         self.assertIsNone(manager.authenticate_session("alice", ""))
@@ -58,13 +61,48 @@ class AuthRegressionTests(TempWorkspaceTest):
         manager.create_user("alice", "password123")
         token = manager.create_session_token("alice")
 
-        data = json.loads(users_path.read_text(encoding="utf-8"))
-        data["alice"]["session_token_expires_at"] = (
+        sessions_path = users_path.with_name("user_sessions.json")
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+        data["alice"]["expires_at"] = (
             datetime.now() - timedelta(days=1)
         ).replace(microsecond=0).isoformat(sep=" ")
-        users_path.write_text(json.dumps(data), encoding="utf-8")
+        sessions_path.write_text(json.dumps(data), encoding="utf-8")
 
         self.assertIsNone(manager.authenticate_session("alice", token))
+
+    def test_v180_session_fields_are_migrated_out_of_users_file(self) -> None:
+        users_path = self.tmp / "users.json"
+        token = "saved-token"
+        expires_at = (datetime.now() + timedelta(days=1)).replace(
+            microsecond=0
+        ).isoformat(sep=" ")
+        users_path.write_text(
+            json.dumps(
+                {
+                    "alice": {
+                        "username": "alice",
+                        "password_hash": "hash",
+                        "salt": "00",
+                        "must_change_password": False,
+                        "created_at": "",
+                        "role": "admin",
+                        "session_token_hash": token,
+                        "session_token_expires_at": expires_at,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        UserManager(users_path)
+
+        users_data = json.loads(users_path.read_text(encoding="utf-8"))
+        self.assertNotIn("session_token_hash", users_data["alice"])
+        self.assertNotIn("session_token_expires_at", users_data["alice"])
+        sessions_data = json.loads(
+            users_path.with_name("user_sessions.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(sessions_data["alice"]["token_hash"], token)
 
 
 class BackendRegressionTests(TempWorkspaceTest):
