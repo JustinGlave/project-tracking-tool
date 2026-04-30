@@ -262,6 +262,9 @@ class UpdaterRegressionTests(TempWorkspaceTest):
         self.assertIn("Get-ChildItem -LiteralPath $payload -Force", script)
         self.assertIn("Copy-Item -Destination $installDir -Recurse -Force", script)
         self.assertIn("_internal", script)
+        self.assertIn("Write-Output \"Starting update from $zipPath\"", script)
+        self.assertIn("Write-Output \"Update files copied successfully.\"", script)
+        self.assertNotIn("Out-File -FilePath $logPath", script)
 
 
 if __name__ == "__main__":

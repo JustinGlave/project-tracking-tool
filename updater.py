@@ -171,9 +171,8 @@ def _build_update_powershell_script(zip_path: Path, install_dir: Path, exe_path:
 $zipPath = {_ps_literal(zip_path)}
 $installDir = {_ps_literal(install_dir)}
 $exePath = {_ps_literal(exe_path)}
-$logPath = Join-Path $env:TEMP 'ProjectTrackingTool_update.log'
 
-"Starting update from $zipPath" | Out-File -FilePath $logPath -Encoding utf8
+Write-Output "Starting update from $zipPath"
 if (-not (Test-Path -LiteralPath $zipPath)) {{
     throw "Update package was not found: $zipPath"
 }}
@@ -205,7 +204,7 @@ try {{
         throw "Updated executable was not found after copy: $exePath"
     }}
 
-    "Update files copied successfully." | Out-File -FilePath $logPath -Append -Encoding utf8
+    Write-Output "Update files copied successfully."
 }}
 finally {{
     if (Test-Path -LiteralPath $stage) {{

@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.3**
+**Current Version: v1.8.4**
 
 ---
 
@@ -33,6 +33,12 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder, with admin restore available from the File menu
 - Auto-updates — when a new version is released, the app notifies you and installs the full app package with one click
+
+---
+
+## What's New in v1.8.4
+
+- Fixed the auto-updater log-file conflict that could restart v1.8.3 without applying the downloaded update
 
 ---
 
