@@ -6,7 +6,7 @@ import logging
 import secrets
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +28,7 @@ def _hash_password(password: str, salt: str) -> str:
 
 
 def _session_expiry_iso() -> str:
-    return (datetime.now() + timedelta(days=_SESSION_TOKEN_DAYS)).replace(
+    return (datetime.now(timezone.utc) + timedelta(days=_SESSION_TOKEN_DAYS)).replace(
         microsecond=0
     ).isoformat(sep=" ")
 
@@ -40,7 +40,13 @@ def _session_is_expired(value: str) -> bool:
         expires_at = datetime.fromisoformat(value)
     except ValueError:
         return True
-    return expires_at <= datetime.now()
+    # Legacy naive timestamps written before v1.8.5 are interpreted as local
+    # time but compared against UTC "now". Treat them as UTC for forward
+    # compatibility — the resulting drift is bounded by the local UTC offset
+    # and small relative to the 30-day expiry window.
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at <= datetime.now(timezone.utc)
 
 
 ROLES = ("admin", "user", "view_only")
@@ -166,13 +172,26 @@ class UserManager:
         return bool(self._load())
 
     def reset_password(self, username: str, temp_password: str) -> None:
-        """Set a temporary password and flag the account for a forced change on next login."""
-        self.change_password(username, temp_password)
+        """Set a temporary password and flag the account for a forced change on next login.
+
+        Performs the hash and the must_change_password flip in a single save
+        so a failure between them cannot leave the account in a half-reset
+        state (new password active but must_change flag not set).
+        """
+        if len(temp_password) < self.MIN_PASSWORD_LENGTH:
+            raise ValueError(
+                f"Password must be at least {self.MIN_PASSWORD_LENGTH} characters."
+            )
         data = self._load()
         key = next((k for k in data if k.casefold() == username.casefold()), None)
-        if key:
-            data[key]["must_change_password"] = True
-            self._save(data)
+        if key is None:
+            raise ValueError(f"User '{username}' not found.")
+        salt = secrets.token_hex(32)
+        data[key]["salt"] = salt
+        data[key]["password_hash"] = _hash_password(temp_password, salt)
+        data[key]["must_change_password"] = True
+        self._save(data)
+        self.clear_session_token(username)
 
     def set_role(self, username: str, role: str) -> None:
         """Change the role for a user."""

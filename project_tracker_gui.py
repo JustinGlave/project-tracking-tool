@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -39,26 +40,39 @@ def _app_data_path() -> Path:
     return new_path
 
 
-def _backup_data_file(data_path: Path) -> None:
-    """Copy the data file to a timestamped backup, keeping the most recent 10 backups."""
+def _backup_data_file(data_path: Path) -> "Optional[str]":
+    """Copy the data file to a timestamped backup, keeping the most recent 10.
+
+    Returns None on success, or a human-readable error message on failure so
+    callers can surface the problem to the user. Prune failures are
+    non-fatal and only logged.
+    """
     if not data_path.exists():
-        return
+        return None
     backup_dir = data_path.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.exception("Failed to create backup directory %s", backup_dir)
+        return f"Could not create backup folder ({exc})"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dest = backup_dir / f"project_tracker_data_{timestamp}.json"
     try:
         shutil.copy2(data_path, dest)
-    except OSError:
+    except OSError as exc:
         logger.exception("Failed to write backup to %s", dest)
-        return
-    # Prune oldest backups, keep last 10
-    backups = sorted(backup_dir.glob("project_tracker_data_*.json"))
-    for old in backups[:-10]:
-        try:
-            old.unlink()
-        except OSError:
-            pass
+        return f"Could not write backup ({exc})"
+    # Prune oldest backups, keep last 10 — non-fatal
+    try:
+        backups = sorted(backup_dir.glob("project_tracker_data_*.json"))
+        for old in backups[:-10]:
+            try:
+                old.unlink()
+            except OSError:
+                logger.warning("Could not remove old backup: %s", old)
+    except OSError:
+        logger.warning("Could not enumerate backups in %s", backup_dir)
+    return None
 
 
 class StartupCheckError(RuntimeError):
@@ -2690,6 +2704,7 @@ class MainWindow(QMainWindow):
 
         # File watcher — auto-refresh when the shared JSON changes
         self._file_watcher = QFileSystemWatcher(self)
+        self._file_watcher_signal_connected = False
         self._file_watcher_debounce = QTimer(self)
         self._file_watcher_debounce.setSingleShot(True)
         self._file_watcher_debounce.setInterval(1500)  # wait 1.5s after last change
@@ -3549,9 +3564,18 @@ class MainWindow(QMainWindow):
     def _start_file_watcher(self) -> None:
         """Watch the shared data JSON for changes made by other users."""
         data_path = str(self._resolve_data_path())
+        # Drop any stale paths from a previous data-folder configuration.
+        for old_path in list(self._file_watcher.files()):
+            if old_path != data_path:
+                self._file_watcher.removePath(old_path)
         if data_path not in self._file_watcher.files():
             self._file_watcher.addPath(data_path)
-        self._file_watcher.fileChanged.connect(self._on_file_watcher_event)
+        # Connect the signal at most once — _start_file_watcher is also called
+        # from _reload_backend, so an unconditional connect would leak one
+        # additional handler invocation per change for every reload.
+        if not self._file_watcher_signal_connected:
+            self._file_watcher.fileChanged.connect(self._on_file_watcher_event)
+            self._file_watcher_signal_connected = True
 
     def _on_file_watcher_event(self, path: str) -> None:
         # Re-add the path in case OneDrive replaced the file (common with cloud sync)
@@ -3561,10 +3585,23 @@ class MainWindow(QMainWindow):
         self._file_watcher_debounce.start()
 
     def _on_data_file_changed(self) -> None:
-        """Called after debounce — reload backend and refresh UI."""
+        """Called after debounce — reload backend and refresh UI.
+
+        If the project currently on screen has been deleted by another user,
+        drop back to the dashboard rather than leaving the header pointed at
+        a now-missing project id.
+        """
+        previously_shown = self.current_project_id
         self.backend = ProjectTrackerBackend(self._resolve_data_path())
+        self.backend.current_user = self._current_user
         self.refresh_project_list()
         self._refresh_address_book_btn()
+        if previously_shown is not None:
+            if self.backend.get_project(previously_shown) is None:
+                self.current_project_id = None
+                self.clear_project_display()
+            else:
+                self.load_current_project()
 
     @staticmethod
     def _resolve_data_path() -> Path:
@@ -3814,9 +3851,33 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
+        # Pre-backup the live file so a bad restore can be reversed.
+        pre_backup_error = _backup_data_file(data_path)
+        if pre_backup_error:
+            QMessageBox.critical(
+                self, "Restore Failed",
+                f"Could not create a pre-restore backup of the current data:\n"
+                f"{pre_backup_error}\n\nThe restore was cancelled to protect your data.",
+            )
+            return
+
+        # Atomic restore: copy to a sibling temp file then rename. A failure
+        # mid-copy leaves the live data file untouched.
         try:
-            _backup_data_file(data_path)
-            shutil.copy2(backup_path, data_path)
+            tmp_fd, tmp_path_str = tempfile.mkstemp(
+                dir=str(data_path.parent), suffix=".tmp"
+            )
+            os.close(tmp_fd)
+            tmp_path = Path(tmp_path_str)
+            try:
+                shutil.copy2(backup_path, tmp_path)
+                tmp_path.replace(data_path)
+            except OSError:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
             self._reload_backend()
         except OSError as exc:
             QMessageBox.critical(self, "Restore Failed", f"Could not restore backup:\n{exc}")
@@ -6313,7 +6374,15 @@ def main() -> int:
     # can set up accounts via File > Manage Users.
 
     # Auto-backup on open (keep last 10 backups)
-    _backup_data_file(_app_data_path())
+    backup_error = _backup_data_file(_app_data_path())
+    if backup_error:
+        QMessageBox.warning(
+            None,
+            "Backup Warning",
+            f"Could not back up your data file before opening:\n{backup_error}\n\n"
+            "The app will continue, but any unsaved changes may be lost if the "
+            "data file becomes corrupted. Check disk space and folder permissions.",
+        )
 
     try:
         window = MainWindow(current_user=current_user)

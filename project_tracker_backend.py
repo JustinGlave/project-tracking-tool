@@ -341,11 +341,12 @@ class ProjectTrackerBackend:
         # atomic saves on all major platforms and prevents a half-written
         # JSON file if the process is interrupted mid-save.
         import time
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            dir=self.db_path.parent, suffix=".tmp"
-        )
-        tmp_path = Path(tmp_path_str)
+        tmp_path: Optional[Path] = None
         try:
+            tmp_fd, tmp_path_str = tempfile.mkstemp(
+                dir=self.db_path.parent, suffix=".tmp"
+            )
+            tmp_path = Path(tmp_path_str)
             with open(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
             # Retry rename up to 5 times — cloud-sync clients (OneDrive, etc.)
@@ -359,10 +360,17 @@ class ProjectTrackerBackend:
                         raise
                     time.sleep(0.2 * (attempt + 1))
         except (OSError, TypeError, ValueError):
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                logger.exception("Failed to remove temporary save file: %s", tmp_path)
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("Failed to remove temporary save file: %s", tmp_path)
+            # Callers mutate the cache before save, so a save failure leaves
+            # the in-memory copy out of sync with disk. Drop it so the next
+            # read reloads from the on-disk truth instead of returning the
+            # uncommitted mutation.
+            self._cache = None
+            self._cache_mtime = 0.0
             raise
         self._cache = data
         try:
@@ -388,10 +396,13 @@ class ProjectTrackerBackend:
         now = self._now_iso()
         new_project_id = int(data["next_project_id"])
 
+        new_job_number = project.job_number.strip()
+        new_job_number_cf = new_job_number.casefold()
         for existing_project in data["projects"]:
+            existing_job_number = str(existing_project.get("job_number", "")).strip()
             if (
-                str(existing_project.get("job_number", "")).strip() == project.job_number.strip()
-                and project.job_number.strip()
+                new_job_number_cf
+                and existing_job_number.casefold() == new_job_number_cf
             ):
                 raise ValueError(
                     f"Project with job number '{project.job_number}' already exists."
@@ -478,11 +489,12 @@ class ProjectTrackerBackend:
             return
 
         new_job_number = str(updates.get("job_number", target_project["job_number"])).strip()
+        new_job_number_cf = new_job_number.casefold()
         if new_job_number:
             for existing_project in data["projects"]:
                 if (
                     int(existing_project["id"]) != project_id
-                    and str(existing_project.get("job_number", "")).strip() == new_job_number
+                    and str(existing_project.get("job_number", "")).strip().casefold() == new_job_number_cf
                 ):
                     raise ValueError(
                         f"Project with job number '{new_job_number}' already exists."
@@ -1058,6 +1070,22 @@ class ProjectTrackerBackend:
         workbook_file = Path(workbook_path)
         workbook = load_workbook(workbook_file, data_only=True)
         sheet = workbook[sheet_name] if sheet_name else workbook[workbook.sheetnames[0]]
+
+        # Sanity-check that this looks like the Phoenix Job Tracking template
+        # before reading hard-coded cell addresses. An unrelated .xlsx with
+        # empty C3/H3 and no task rows would otherwise silently import as a
+        # blank/garbage project.
+        header_cells = [self._value(sheet, addr) for addr in ("C3", "H3")]
+        first_task_cells = [self._value(sheet, addr) for addr in ("B10", "F10")]
+        has_header = any(str(v or "").strip() for v in header_cells)
+        has_task_rows = any(str(v or "").strip() for v in first_task_cells)
+        if not (has_header or has_task_rows):
+            raise ValueError(
+                "The selected workbook does not appear to be the Phoenix Job "
+                "Tracking template. Expected a job name in C3, a job number "
+                "in H3, or task names starting at row 10 — all are empty.\n\n"
+                "Please select a fresh Phoenix workbook or create the project manually."
+            )
 
         job_number = self._value(sheet, "H3")
         if not job_number:
@@ -2018,16 +2046,20 @@ class ProjectTrackerBackend:
 
     @staticmethod
     def _project_from_dict(project_dict: dict[str, Any]) -> ProjectRecord:
+        # Defensive .get() across the board — one record missing a key would
+        # otherwise raise KeyError out of list_projects() and break the entire
+        # UI for the whole data file. Required string fields fall back to ""
+        # and required dates fall back to None; the dataclass tolerates both.
         return ProjectRecord(
-            id=project_dict["id"],
-            job_name=project_dict["job_name"],
-            job_number=project_dict["job_number"],
-            project_manager=project_dict["project_manager"],
-            sales_engineer=project_dict["sales_engineer"],
-            target_completion=project_dict["target_completion"],
-            liquid_damages=project_dict["liquid_damages"],
-            warranty_period=project_dict["warranty_period"],
-            notes=project_dict["notes"],
+            id=project_dict.get("id"),
+            job_name=str(project_dict.get("job_name", "") or ""),
+            job_number=str(project_dict.get("job_number", "") or ""),
+            project_manager=str(project_dict.get("project_manager", "") or ""),
+            sales_engineer=str(project_dict.get("sales_engineer", "") or ""),
+            target_completion=project_dict.get("target_completion"),
+            liquid_damages=str(project_dict.get("liquid_damages", "") or ""),
+            warranty_period=str(project_dict.get("warranty_period", "") or ""),
+            notes=str(project_dict.get("notes", "") or ""),
             booked_date=project_dict.get("booked_date", ""),
             group_ops_manager=project_dict.get("group_ops_manager", ""),
             group_ops_supervisor=project_dict.get("group_ops_supervisor", ""),
@@ -2042,8 +2074,8 @@ class ProjectTrackerBackend:
             is_test=bool(project_dict.get("is_test", False)),
             pinned=bool(project_dict.get("pinned", False)),
             rss_files=_migrate_rss_files(project_dict),
-            created_at=project_dict["created_at"],
-            updated_at=project_dict["updated_at"],
+            created_at=project_dict.get("created_at"),
+            updated_at=project_dict.get("updated_at"),
             created_by=project_dict.get("created_by", ""),
             updated_by=project_dict.get("updated_by", ""),
         )
@@ -2051,14 +2083,14 @@ class ProjectTrackerBackend:
     @staticmethod
     def _task_from_dict(task_dict: dict[str, Any]) -> TaskRecord:
         return TaskRecord(
-            id=task_dict["id"],
-            project_id=task_dict["project_id"],
-            task_name=task_dict["task_name"],
-            phase=task_dict["phase"],
-            sort_order=task_dict["sort_order"],
-            completed_date=task_dict["completed_date"],
-            is_complete=bool(task_dict["is_complete"]),
-            notes=task_dict["notes"],
+            id=task_dict.get("id"),
+            project_id=task_dict.get("project_id"),
+            task_name=str(task_dict.get("task_name", "") or ""),
+            phase=str(task_dict.get("phase", "") or "General"),
+            sort_order=int(task_dict.get("sort_order", 0) or 0),
+            completed_date=task_dict.get("completed_date"),
+            is_complete=bool(task_dict.get("is_complete", False)),
+            notes=str(task_dict.get("notes", "") or ""),
             updated_by=task_dict.get("updated_by", ""),
         )
 

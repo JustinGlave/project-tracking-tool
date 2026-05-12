@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.4**
+**Current Version: v1.8.5**
 
 ---
 
@@ -33,6 +33,23 @@ A desktop application for tracking ATS project tasks, built for the ATS team.
 - **Phoenix Controls dark navy UI** — consistent design system across all ATS tools
 - Auto-backup on open — keeps the last 10 backups in a `backups/` subfolder, with admin restore available from the File menu
 - Auto-updates — when a new version is released, the app notifies you and installs the full app package with one click
+
+---
+
+## What's New in v1.8.5
+
+- Auto-refresh after another user's edit now drops the displayed project back to the dashboard when that project has been deleted, instead of leaving stale data in the header
+- Fixed a file-watcher signal leak that caused refresh handlers to fire multiple times per change after the data location was changed
+- Restore Backup is now atomic — a failure mid-copy can no longer leave the live data file half-written
+- A failed save now invalidates the in-memory cache so a retry reads fresh data from disk instead of returning the uncommitted mutation
+- Project loading tolerates records missing optional fields (older records or partial concurrent writes no longer break the whole list)
+- Workbook import now rejects unrelated `.xlsx` files instead of silently creating a blank/garbage project
+- Auto-backup failures are now surfaced to the user instead of silently swallowed
+- Forced password reset is now atomic — the new password and the must-change flag are written in a single save
+- Session expiry timestamps are now timezone-aware (UTC); legacy naive timestamps continue to work
+- Job number uniqueness check is now case-insensitive (matches the search behavior elsewhere in the app)
+- Auto-updater skips the version check when either local or remote tag is unparseable instead of treating an unparseable version as `0`
+- Financial snapshot writes are now atomic (temp file + rename)
 
 ---
 

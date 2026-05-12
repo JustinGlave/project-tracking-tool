@@ -267,5 +267,175 @@ class UpdaterRegressionTests(TempWorkspaceTest):
         self.assertNotIn("Out-File -FilePath $logPath", script)
 
 
+class V185RegressionTests(TempWorkspaceTest):
+    """Regression tests covering the v1.8.5 bug-fix release."""
+
+    # ── L2: timezone-aware session expiry ────────────────────────────────
+    def test_session_expiry_treats_legacy_naive_timestamp_as_valid(self) -> None:
+        users_path = self.tmp / "users.json"
+        manager = UserManager(users_path)
+        manager.create_user("alice", "password123")
+        token = manager.create_session_token("alice")
+
+        sessions_path = users_path.with_name("user_sessions.json")
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+        future_naive = (datetime.now() + timedelta(days=10)).replace(
+            microsecond=0
+        ).isoformat(sep=" ")
+        data["alice"]["expires_at"] = future_naive
+        sessions_path.write_text(json.dumps(data), encoding="utf-8")
+
+        self.assertIsNotNone(manager.authenticate_session("alice", token))
+
+    def test_session_expiry_written_with_timezone(self) -> None:
+        users_path = self.tmp / "users.json"
+        manager = UserManager(users_path)
+        manager.create_user("alice", "password123")
+        manager.create_session_token("alice")
+
+        sessions_path = users_path.with_name("user_sessions.json")
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+        self.assertIn("+00:00", data["alice"]["expires_at"])
+
+    # ── M2: reset_password is atomic ─────────────────────────────────────
+    def test_reset_password_sets_must_change_flag_and_new_password(self) -> None:
+        manager = UserManager(self.tmp / "users.json")
+        manager.create_user("alice", "password123", must_change_password=False)
+        manager.reset_password("alice", "temporary123")
+
+        user = manager.get_user("alice")
+        assert user is not None
+        self.assertTrue(user.must_change_password)
+        self.assertIsNotNone(manager.authenticate("alice", "temporary123"))
+
+    def test_reset_password_with_short_password_does_not_modify_account(self) -> None:
+        manager = UserManager(self.tmp / "users.json")
+        manager.create_user("alice", "password123")
+        with self.assertRaises(ValueError):
+            manager.reset_password("alice", "short")
+        self.assertIsNotNone(manager.authenticate("alice", "password123"))
+
+    # ── L5: _parse_version returns None on unparseable ───────────────────
+    def test_parse_version_returns_none_on_unparseable(self) -> None:
+        from updater import _parse_version
+        self.assertIsNone(_parse_version(""))
+        self.assertIsNone(_parse_version("not-a-version"))
+        self.assertIsNone(_parse_version("v1.2.beta"))
+
+    def test_parse_version_handles_normal_tags(self) -> None:
+        from updater import _parse_version
+        self.assertEqual(_parse_version("v1.8.5"), (1, 8, 5))
+        self.assertEqual(_parse_version("1.8.5"), (1, 8, 5))
+        self.assertEqual(_parse_version("V2.0.0"), (2, 0, 0))
+
+    # ── L6: job_number uniqueness is case-insensitive ────────────────────
+    def test_create_project_rejects_case_different_duplicate_job_number(self) -> None:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        backend.create_project(ProjectRecord(job_name="A", job_number="ABC-123"))
+        with self.assertRaises(ValueError):
+            backend.create_project(ProjectRecord(job_name="B", job_number="abc-123"))
+
+    def test_update_project_rejects_case_different_duplicate_job_number(self) -> None:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        backend.create_project(ProjectRecord(job_name="A", job_number="ABC-123"))
+        pid2 = backend.create_project(ProjectRecord(job_name="B", job_number="XYZ-999"))
+        with self.assertRaises(ValueError):
+            backend.update_project(pid2, job_number="abc-123")
+
+    # ── M3: cache invalidated on save failure ────────────────────────────
+    def test_cache_invalidated_after_save_failure(self) -> None:
+        import tempfile as _tempfile
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        backend.create_project(ProjectRecord(job_name="Original", job_number="1"))
+
+        real_mkstemp = _tempfile.mkstemp
+        def failing_mkstemp(*args, **kwargs):
+            raise OSError("simulated disk failure")
+        _tempfile.mkstemp = failing_mkstemp  # type: ignore[assignment]
+        # The backend module imported tempfile at the top, so we have to patch
+        # the symbol it actually uses.
+        import project_tracker_backend as _ptb
+        _ptb.tempfile.mkstemp = failing_mkstemp  # type: ignore[attr-defined]
+        try:
+            with self.assertRaises(OSError):
+                backend.create_project(ProjectRecord(job_name="Failed", job_number="2"))
+        finally:
+            _tempfile.mkstemp = real_mkstemp  # type: ignore[assignment]
+            _ptb.tempfile.mkstemp = real_mkstemp  # type: ignore[attr-defined]
+
+        # The failed mutation must not be visible on the next read.
+        projects = backend.list_projects()
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].job_name, "Original")
+
+    # ── H3: _project_from_dict tolerates missing fields ──────────────────
+    def test_load_tolerates_project_record_missing_optional_fields(self) -> None:
+        data_path = self.tmp / "data.json"
+        data_path.write_text(json.dumps({
+            "projects": [{"id": 1, "job_name": "Sparse"}],
+            "tasks": [], "notes": [], "change_orders": [], "activity_log": [],
+            "task_notes": [], "address_book": [], "pending_deletes": [],
+            "next_project_id": 2, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
+        }), encoding="utf-8")
+
+        backend = ProjectTrackerBackend(data_path)
+        projects = backend.list_projects()
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0].job_name, "Sparse")
+        self.assertEqual(projects[0].job_number, "")
+        self.assertEqual(projects[0].project_manager, "")
+
+    # ── H4: workbook validation ──────────────────────────────────────────
+    def test_import_workbook_rejects_unrelated_xlsx(self) -> None:
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = "Date"
+        ws["B1"] = "Amount"
+        ws["A2"] = "2026-01-01"
+        ws["B2"] = 100
+        bad_path = self.tmp / "expenses.xlsx"
+        wb.save(bad_path)
+
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        with self.assertRaises(ValueError):
+            backend.import_project_from_workbook(bad_path)
+
+    def test_import_workbook_accepts_phoenix_header(self) -> None:
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws["C3"] = "Test Project"
+        ws["H3"] = "12345"
+        ws["B10"] = "Sales-Ops Turnover"
+        good_path = self.tmp / "phoenix.xlsx"
+        wb.save(good_path)
+
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        project_id = backend.import_project_from_workbook(good_path)
+        project = backend.get_project(project_id)
+        assert project is not None
+        self.assertEqual(project.job_name, "Test Project")
+        self.assertEqual(project.job_number, "12345")
+
+    # ── L1: backup error surfacing ───────────────────────────────────────
+    def test_backup_returns_none_on_success(self) -> None:
+        from project_tracker_gui import _backup_data_file
+        data_path = self.tmp / "data.json"
+        data_path.write_text("{}", encoding="utf-8")
+
+        result = _backup_data_file(data_path)
+        self.assertIsNone(result)
+        backups = list((data_path.parent / "backups").glob("*.json"))
+        self.assertEqual(len(backups), 1)
+
+    def test_backup_returns_none_when_source_file_missing(self) -> None:
+        from project_tracker_gui import _backup_data_file
+        result = _backup_data_file(self.tmp / "no_such_file.json")
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

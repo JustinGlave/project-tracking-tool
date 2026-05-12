@@ -64,13 +64,21 @@ class UpdatePackageError(RuntimeError):
     """Raised when the downloaded update package is missing required files."""
 
 
-def _parse_version(tag: str) -> tuple[int, ...]:
-    """Convert 'v1.2.3', 'V1.2.3', or '1.2.3' to (1, 2, 3) for comparison."""
+def _parse_version(tag: str) -> Optional[tuple[int, ...]]:
+    """Convert 'v1.2.3', 'V1.2.3', or '1.2.3' to (1, 2, 3) for comparison.
+
+    Returns None if the tag is empty or unparseable so callers can skip the
+    comparison rather than treating the version as (0,) — which would
+    incorrectly suppress every update check whenever the local __version__
+    is also unparseable.
+    """
     cleaned = tag.lstrip("vV").strip()
+    if not cleaned:
+        return None
     try:
         return tuple(int(part) for part in cleaned.split("."))
     except ValueError:
-        return (0,)
+        return None
 
 
 def check_for_update() -> Optional[UpdateInfo]:
@@ -92,7 +100,15 @@ def check_for_update() -> Optional[UpdateInfo]:
         if not latest_tag:
             return None
 
-        if _parse_version(latest_tag) <= _parse_version(__version__):
+        remote_version = _parse_version(latest_tag)
+        local_version = _parse_version(__version__)
+        if remote_version is None or local_version is None:
+            logger.warning(
+                "Skipping update check — unparseable version (remote=%r local=%r).",
+                latest_tag, __version__,
+            )
+            return None
+        if remote_version <= local_version:
             return None  # already up to date
 
         # Find the update zip asset (not the full install zip)

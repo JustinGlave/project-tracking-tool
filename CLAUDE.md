@@ -16,14 +16,23 @@ Inno Setup is installed at: `C:\Users\justing\AppData\Local\Programs\Inno Setup 
 ```
 
 ### Step 3 — Zip archives (PowerShell)
+
+The auto-updater zip must contain the **contents** of the PyInstaller folder (exe + `_internal/` at top level), not just the exe — `_validate_update_zip` rejects packages missing `_internal/`. Use the `\*` suffix on the source path:
+
 ```powershell
-Compress-Archive -Path 'dist\ProjectTrackingTool\ProjectTrackingTool.exe' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force
+Compress-Archive -Path 'dist\ProjectTrackingTool\*' -DestinationPath 'dist\ProjectTrackingTool.zip' -Force
 Compress-Archive -Path 'dist\ProjectTrackingTool' -DestinationPath 'dist\ProjectTrackingTool_FullInstall.zip' -Force
+```
+
+Validate the auto-updater zip before releasing:
+
+```powershell
+& "C:\Users\justing\PycharmProjects\Job Tracker\.venv\Scripts\python.exe" -c "from updater import _validate_update_zip; from pathlib import Path; _validate_update_zip(Path('dist/ProjectTrackingTool.zip')); print('OK')"
 ```
 
 ### Release assets to upload
 - `dist\ProjectTrackingToolSetup.exe` — installer for new users
-- `dist\ProjectTrackingTool.zip` — exe only, used by auto-updater
+- `dist\ProjectTrackingTool.zip` — auto-updater payload (full folder contents)
 - `dist\ProjectTrackingTool_FullInstall.zip` — full folder, for manual installs
 
 ---

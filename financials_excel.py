@@ -325,21 +325,37 @@ class ExcelFinancialsProvider:
         return ""
 
     def _save_snapshot(self) -> None:
-        """Write the current cache to a JSON snapshot file for other machines to read."""
+        """Write the current cache to a JSON snapshot file for other machines to read.
+
+        Uses a temp file + atomic rename so a crash mid-write cannot leave the
+        snapshot file half-written and unreadable for downstream consumers.
+        """
+        if self._snapshot_path is None:
+            return
+        snapshot_path = self._snapshot_path
         try:
-            if self._snapshot_path is None:
-                return
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             data = {
                 "saved_at": datetime.now().replace(microsecond=0).isoformat(sep=" "),
                 "records": {k: dataclasses.asdict(v) for k, v in self._cache.items()},
             }
-            snapshot_path = self._snapshot_path
-            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(snapshot_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+            tmp_fd, tmp_path_str = tempfile.mkstemp(
+                dir=str(snapshot_path.parent), suffix=".tmp"
+            )
+            tmp_path = Path(tmp_path_str)
+            try:
+                with open(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+                tmp_path.replace(snapshot_path)
+            except OSError:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
             logger.info("Financial snapshot saved to %s", snapshot_path)
         except OSError:
-            logger.exception("Failed to save financial snapshot to %s", self._snapshot_path)
+            logger.exception("Failed to save financial snapshot to %s", snapshot_path)
 
 
 class SnapshotFinancialsProvider:
