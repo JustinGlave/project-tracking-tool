@@ -1,5 +1,26 @@
 # Project Tracking Tool — Claude Instructions
 
+## Retrofit state
+
+**Wave 8b (commons retrofit) in progress.** B1 (commons submodule +
+requirements-dev + CI minor edit) landed 2026-05-27 by explicit
+operator-approved early-open override (the doctrinal cooldown floor
+was 2026-06-09, computed from Wave 8a's 2026-05-26 merge per
+MIGRATION_RULES § Frequency limits; floor breached intentionally with
+no unresolved technical blockers). B2-B11 sequence in
+`phoenix-commons/docs/ui-platform-baseline-v1/WAVE_8B_IMPLEMENTATION_BRIEF.md`.
+
+The commons submodule lives at `commons/` (pinned to `phoenix-commons`
+`main`). Source mode requires `pip install -e ./commons` per ADR-015.
+
+Critical preservation rules for Wave 8b:
+
+- **No AppId GUID added to installer.iss** — v1.6.0..v1.8.5 users have
+  AppName-hashed default; adding one would break upgrade detection.
+- Full-folder updater payload preserved (`expected_internal=True`).
+- All Excel / financials / user-auth code paths preserved-local.
+- `version.py` stays at `1.8.5` (Decision #1 tag-skip).
+
 ## Build Process
 
 **Never run `cmd /c build.bat` from Bash.** It silently fails in the Git Bash environment. Instead, run each build step directly:

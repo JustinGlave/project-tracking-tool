@@ -1,0 +1,10 @@
+# Project Tracking Tool — development dependencies
+#
+# Build + test toolchain pinned per FROZEN_BUILD_BASELINE.md and the
+# Phoenix Tools Unified Standard.
+#
+# Added at Wave 8b B1 (2026-05-27, operator-approved early-open override).
+
+pyinstaller==6.20.0
+pytest==8.3.4
+pytest-qt==4.4.0
