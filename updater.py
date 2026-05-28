@@ -1,76 +1,125 @@
 """
 updater.py — GitHub-based auto-updater for Project Tracking Tool.
 
+Wave 8b B3 hybrid facade. As of 2026-05-28, this module delegates the
+generic update-check + full-folder download/apply path to
+``phoenix_commons.updater`` while preserving Job-Tracker-specific
+naming constants and the regression-test surface
+(``UpdatePackageError`` / ``_validate_update_zip`` /
+``_build_update_powershell_script``) that ``tests/test_regressions.py``
+imports by name.
+
+ADR-003 production payload asymmetry — Project Tracking Tool ships a
+**full-folder** updater payload. ``download_and_apply`` therefore calls
+commons with ``expected_internal=True`` (commons' default); commons
+handles the zip validation (checking ``<EXE_NAME>`` exists at zip root
+or inside a top-level folder named after the exe stem, AND
+``_internal/`` runtime folder is present) and uses its PowerShell +
+batch wrapper to extract the full folder over the install directory,
+then relaunch.
+
 How it works
 ------------
-1. On startup the GUI calls check_for_update() in a background thread.
-2. That function hits the GitHub Releases API and compares the latest tag
-   against the local __version__ string.
-3. If a newer version exists it returns an UpdateInfo object; the GUI shows
-   a banner with an "Install & Restart" button.
-4. When the user clicks the button, download_and_apply() is called:
-      a. Downloads the auto-updater .zip to a temp file.
-      b. Validates that the zip contains the full PyInstaller one-folder app.
-      c. Writes a small PowerShell updater plus a .bat wrapper that waits for
-         this process to exit, extracts the whole app folder over the install
-         folder, then relaunches it.
-      d. Launches the .bat and calls sys.exit() — Windows takes it from there.
+1. On startup the GUI calls ``check_for_update()`` in a background
+   thread.
+2. That function hits the GitHub Releases API (via commons) and
+   compares the latest tag against the local ``__version__`` string.
+3. If a newer version exists it returns an ``UpdateInfo`` object; the
+   GUI shows a banner with an "Install & Restart" button.
+4. When the user clicks the button, ``download_and_apply()`` is called.
+   commons downloads, validates, and runs a PowerShell-driven
+   full-folder replacement before relaunching.
 
-Configuration
--------------
-Set GITHUB_OWNER and GITHUB_REPO to match your GitHub account and repository.
-The updater looks for ProjectTrackingTool.zip, falling back to a non-full-install .zip asset.
+Preserved-local logic (MIGRATION_RULES § 1 hybrid facade)
+---------------------------------------------------------
+- ``GITHUB_OWNER`` / ``GITHUB_REPO`` — naming constants passed to the
+  commons facade.
+
+- ``UpdatePackageError``: re-exported from
+  ``phoenix_commons.updater.installer.UpdatePackageError`` (identity
+  preserved) — kept available as ``updater.UpdatePackageError`` because
+  ``tests/test_regressions.py`` imports it by name.
+
+- ``_validate_update_zip`` / ``_build_update_powershell_script``: kept
+  at module level for the ``tests/test_regressions.py`` regression
+  baseline. commons has equivalent private helpers
+  (``_validate_update_zip`` / ``_build_full_folder_powershell``) but
+  with different signatures; keeping ours local means the test contract
+  doesn't reach into commons internals.
+
+- ``_parse_version`` / ``_ps_literal`` / ``_build_update_batch``: kept
+  local — used by the preserved helpers above. commons has internal
+  equivalents but they're private.
+
+UpdateInfo + UpdatePackageError identity contract
+-------------------------------------------------
+``updater.UpdateInfo is phoenix_commons.updater.UpdateInfo`` and
+``updater.UpdatePackageError is phoenix_commons.updater.installer.UpdatePackageError``
+— both verified by the B3 commit's identity check. Callers that did
+``from updater import UpdateInfo`` or ``from updater import
+UpdatePackageError`` continue to work unchanged.
 """
 
 from __future__ import annotations
 
-import os
-import sys
-import subprocess
-import tempfile
-import urllib.request
-import urllib.error
-import json
 import logging
 import zipfile
-from dataclasses import dataclass
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
+# Commons facade imports — these provide the generic update-check and
+# full-folder download/apply implementation. UpdateInfo + UpdatePackageError
+# are re-exported here (identity preserved) so callers that do
+# ``from updater import UpdateInfo`` or ``from updater import UpdatePackageError``
+# don't change.
+from phoenix_commons.updater import UpdateInfo
+from phoenix_commons.updater import check_for_update as _commons_check_for_update
+from phoenix_commons.updater import download_and_apply as _commons_download_and_apply
+from phoenix_commons.updater.installer import UpdatePackageError
 
 from version import __version__
 
 logger = logging.getLogger(__name__)
 
-# ── CHANGE THESE to match your GitHub account / repo name ─────────────────────
+# ── Project Tracking Tool release contract ──────────────────────────────────
 GITHUB_OWNER = "JustinGlave"
-GITHUB_REPO  = "project-tracking-tool"
-# ──────────────────────────────────────────────────────────────────────────────
+GITHUB_REPO = "project-tracking-tool"
+EXE_NAME = "ProjectTrackingTool.exe"
+ZIP_ASSET_NAME = "ProjectTrackingTool.zip"
+# ────────────────────────────────────────────────────────────────────────────
 
-RELEASES_API = (
-    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
-)
-REQUEST_TIMEOUT = 8  # seconds
+__all__ = [
+    "UpdateInfo",
+    "UpdatePackageError",
+    "check_for_update",
+    "download_and_apply",
+    "GITHUB_OWNER",
+    "GITHUB_REPO",
+    "EXE_NAME",
+    "ZIP_ASSET_NAME",
+    # Helpers below are preserved-local for the
+    # tests/test_regressions.py regression baseline. commons has
+    # equivalent private helpers; ours stay independently exercised.
+    "_parse_version",
+    "_validate_update_zip",
+    "_build_update_powershell_script",
+]
 
 
-@dataclass
-class UpdateInfo:
-    current_version: str
-    latest_version:  str
-    download_url:    str
-    release_notes:   str
-
-
-class UpdatePackageError(RuntimeError):
-    """Raised when the downloaded update package is missing required files."""
-
+# ─── Preserved-local helpers (test surface) ──────────────────────────────────
 
 def _parse_version(tag: str) -> Optional[tuple[int, ...]]:
-    """Convert 'v1.2.3', 'V1.2.3', or '1.2.3' to (1, 2, 3) for comparison.
+    """Convert ``'v1.2.3'``, ``'V1.2.3'``, or ``'1.2.3'`` to ``(1, 2, 3)``.
 
-    Returns None if the tag is empty or unparseable so callers can skip the
-    comparison rather than treating the version as (0,) — which would
-    incorrectly suppress every update check whenever the local __version__
-    is also unparseable.
+    Returns ``None`` if the tag is empty or unparseable so callers can
+    skip the comparison rather than treating the version as ``(0,)`` —
+    which would incorrectly suppress every update check whenever the
+    local ``__version__`` is also unparseable.
+
+    Preserved-local for ``tests/test_regressions.py`` (commons has its
+    own private ``_parse_version`` in ``phoenix_commons.updater.client``
+    with slightly different fail-soft semantics — ``(0,)`` vs
+    ``None``).
     """
     cleaned = tag.lstrip("vV").strip()
     if not cleaned:
@@ -81,72 +130,15 @@ def _parse_version(tag: str) -> Optional[tuple[int, ...]]:
         return None
 
 
-def check_for_update() -> Optional[UpdateInfo]:
-    """
-    Query the GitHub Releases API.
-    Returns an UpdateInfo if a newer version is available, otherwise None.
-    Safe to call from a background thread — never raises, logs errors instead.
-    """
-    try:
-        req = urllib.request.Request(
-            RELEASES_API,
-            headers={"Accept": "application/vnd.github+json",
-                     "User-Agent": "ProjectTrackingTool"},
-        )
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode())
-
-        latest_tag = data.get("tag_name", "")
-        if not latest_tag:
-            return None
-
-        remote_version = _parse_version(latest_tag)
-        local_version = _parse_version(__version__)
-        if remote_version is None or local_version is None:
-            logger.warning(
-                "Skipping update check — unparseable version (remote=%r local=%r).",
-                latest_tag, __version__,
-            )
-            return None
-        if remote_version <= local_version:
-            return None  # already up to date
-
-        # Find the update zip asset (not the full install zip)
-        assets = data.get("assets", [])
-        exe_asset = next(
-            (a for a in assets
-             if a.get("name", "").lower() == "projecttrackingtool.zip"),
-            None,
-        )
-        # Fallback: any zip that isn't the full install
-        if exe_asset is None:
-            exe_asset = next(
-                (a for a in assets
-                 if a.get("name", "").lower().endswith(".zip")
-                 and "fullinstall" not in a.get("name", "").lower()),
-                None,
-            )
-        if exe_asset is None:
-            logger.warning("New release %s found but no .zip asset attached.", latest_tag)
-            return None
-
-        return UpdateInfo(
-            current_version = __version__,
-            latest_version  = latest_tag.lstrip("vV"),
-            download_url    = exe_asset["browser_download_url"],
-            release_notes   = data.get("body", "").strip(),
-        )
-
-    except urllib.error.URLError as exc:
-        logger.debug("Update check failed (network): %s", exc)
-        return None
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError, AttributeError) as exc:
-        logger.warning("Update check failed: %s", exc)
-        return None
-
-
 def _validate_update_zip(zip_path: Path) -> None:
-    """Ensure the updater package contains a full one-folder PyInstaller build."""
+    """Ensure the updater package contains a full one-folder PyInstaller build.
+
+    Preserved-local for ``tests/test_regressions.py`` — commons has
+    ``phoenix_commons.updater.installer._validate_update_zip(zip_path,
+    exe_name, *, expected_internal=True)`` with a different signature;
+    keeping ours local means tests don't need to learn the commons
+    signature.
+    """
     try:
         with zipfile.ZipFile(zip_path) as zf:
             names = {name.replace("\\", "/").lstrip("/") for name in zf.namelist()}
@@ -156,8 +148,8 @@ def _validate_update_zip(zip_path: Path) -> None:
             "Please download the installer manually from GitHub."
         ) from exc
 
-    flat_exe = "ProjectTrackingTool.exe"
-    nested_exe = "ProjectTrackingTool/ProjectTrackingTool.exe"
+    flat_exe = EXE_NAME
+    nested_exe = f"ProjectTrackingTool/{EXE_NAME}"
     has_exe = flat_exe in names or nested_exe in names
     has_internal = any(
         name.startswith("_internal/") or name.startswith("ProjectTrackingTool/_internal/")
@@ -166,7 +158,7 @@ def _validate_update_zip(zip_path: Path) -> None:
 
     if not has_exe:
         raise UpdatePackageError(
-            "The downloaded update package does not contain ProjectTrackingTool.exe.\n"
+            f"The downloaded update package does not contain {EXE_NAME}.\n"
             "Please download the installer manually from GitHub."
         )
     if not has_internal:
@@ -176,13 +168,19 @@ def _validate_update_zip(zip_path: Path) -> None:
         )
 
 
-def _ps_literal(value: Path | str) -> str:
+def _ps_literal(value: "Path | str") -> str:
     """Return a PowerShell single-quoted string literal."""
     return "'" + str(value).replace("'", "''") + "'"
 
 
 def _build_update_powershell_script(zip_path: Path, install_dir: Path, exe_path: Path) -> str:
-    """Build the PowerShell script that performs the file replacement."""
+    """Build the PowerShell script that performs the file replacement.
+
+    Preserved-local for ``tests/test_regressions.py`` — commons has
+    ``_build_full_folder_powershell(zip_path, install_dir, exe_path,
+    exe_name)`` with a 4-arg signature; keeping ours local means tests
+    don't need to adapt to the commons signature.
+    """
     return f"""$ErrorActionPreference = 'Stop'
 $zipPath = {_ps_literal(zip_path)}
 $installDir = {_ps_literal(install_dir)}
@@ -233,118 +231,58 @@ finally {{
 """
 
 
-def _build_update_batch(pid: int, ps_path: Path, exe_path: Path) -> str:
-    ps_str = str(ps_path)
-    exe_str = str(exe_path)
-    return f"""@echo off
-setlocal
-set "LOG=%TEMP%\\ProjectTrackingTool_update.log"
-echo Waiting for Project Tracking Tool to close... > "%LOG%"
-:wait
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto wait
-)
-powershell -NoProfile -ExecutionPolicy Bypass -File "{ps_str}" >> "%LOG%" 2>&1
-if errorlevel 1 (
-    echo Update failed. See "%LOG%" for details. >> "%LOG%"
-    start "" "{exe_str}"
-    del "{ps_str}" >nul 2>nul
-    del "%~f0"
-    exit /b 1
-)
-start "" "{exe_str}"
-del "{ps_str}" >nul 2>nul
-del "%~f0"
-"""
+# ─── Public API — hybrid facade around phoenix_commons.updater ───────────────
+
+def check_for_update() -> Optional[UpdateInfo]:
+    """Query the GitHub Releases API and return an :class:`UpdateInfo` when newer.
+
+    Wave 8b B3 facade. Delegates to
+    :func:`phoenix_commons.updater.check_for_update` with the Project
+    Tracking Tool release contract baked in (owner = ``JustinGlave``,
+    repo = ``project-tracking-tool``, asset = ``ProjectTrackingTool.zip``).
+
+    Safe to call from a background thread — never raises. commons logs
+    network failures at DEBUG and payload-parse problems at WARNING.
+
+    Semantic-narrowing note: the retired local implementation had a
+    fallback that picked "any non-``fullinstall`` .zip asset" when the
+    canonical name wasn't found. commons does exact-match only. No
+    current release ships under a non-canonical name; if a future
+    release ever does, operator can re-add the fallback locally without
+    touching commons.
+    """
+    return _commons_check_for_update(
+        owner=GITHUB_OWNER,
+        repo=GITHUB_REPO,
+        current_version=__version__,
+        zip_asset_name=ZIP_ASSET_NAME,
+    )
 
 
 def download_and_apply(info: UpdateInfo, progress_callback=None) -> None:
+    """Download the update zip, validate the full-folder payload, apply, and relaunch.
+
+    Wave 8b B3 facade. Delegates to
+    :func:`phoenix_commons.updater.download_and_apply` with the
+    Project Tracking Tool release contract baked in:
+
+    - ``exe_name=EXE_NAME`` (``ProjectTrackingTool.exe``) — the entry
+      commons looks for in the zip and the basename used to construct
+      the PowerShell extraction script.
+    - ``expected_internal=True`` per **ADR-003** — Project Tracking
+      Tool ships a full-folder updater zip (exe + ``_internal/``
+      runtime folder). commons validates both at zip root (or inside a
+      top-level folder named ``ProjectTrackingTool/``).
+    - ``progress_callback(bytes_done, total_bytes)`` — forwarded
+      verbatim for GUI progress-bar driving.
+
+    Raises :class:`RuntimeError` (or :class:`UpdatePackageError`, a
+    subclass) on any failure so the caller can show an error dialog
+    rather than silently fail.
     """
-    Download the new zip, extract it over the current install, and restart.
-
-    progress_callback(bytes_done, total_bytes) is called during download
-    so the GUI can show a progress bar. Pass None to skip.
-
-    Raises RuntimeError if anything goes wrong so the caller can show
-    an error dialog rather than silently failing.
-    """
-    if not getattr(sys, "frozen", False):
-        raise RuntimeError(
-            "Update can only be applied to a compiled build.\n"
-            "You're running from source, so use git pull/build locally or download the installer from GitHub."
-        )
-
-    current_exe = Path(sys.executable).resolve()
-    install_dir = current_exe.parent
-
-    # Download zip to system temp
-    tmp_fd, tmp_zip_str = tempfile.mkstemp(suffix=".zip")
-    tmp_zip = Path(tmp_zip_str)
-
-    try:
-        req = urllib.request.Request(
-            info.download_url,
-            headers={"User-Agent": "ProjectTrackingTool"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            total = int(resp.headers.get("Content-Length", 0))
-            done  = 0
-            chunk = 64 * 1024
-            with open(tmp_fd, "wb") as fh:
-                while True:
-                    block = resp.read(chunk)
-                    if not block:
-                        break
-                    fh.write(block)
-                    done += len(block)
-                    if progress_callback:
-                        progress_callback(done, total)
-
-        # Verify download is complete
-        if total > 0 and tmp_zip.stat().st_size < total:
-            tmp_zip.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"Download incomplete: got {tmp_zip.stat().st_size} of {total} bytes.\n"
-                "Please try again or download manually from GitHub."
-            )
-
-    except RuntimeError:
-        raise
-    except (OSError, urllib.error.URLError, ValueError) as exc:
-        try:
-            tmp_zip.unlink(missing_ok=True)
-        except OSError:
-            logger.exception("Failed to remove incomplete update download: %s", tmp_zip)
-        raise RuntimeError(f"Download failed: {exc}") from exc
-
-    try:
-        _validate_update_zip(tmp_zip)
-    except RuntimeError:
-        try:
-            tmp_zip.unlink(missing_ok=True)
-        except OSError:
-            logger.exception("Failed to remove invalid update download: %s", tmp_zip)
-        raise
-
-    # Write scripts that wait for this process to exit, extract the full app
-    # folder over the install dir, then relaunch.
-    pid = os.getpid()
-    ps_fd, ps_path_str = tempfile.mkstemp(suffix=".ps1")
-    bat_fd, bat_path_str = tempfile.mkstemp(suffix=".bat")
-    ps_path = Path(ps_path_str)
-    bat_path = Path(bat_path_str)
-
-    with open(ps_fd, "w", encoding="utf-8") as fh:
-        fh.write(_build_update_powershell_script(tmp_zip, install_dir, current_exe))
-    with open(bat_fd, "w", encoding="utf-8") as fh:
-        bat_content = _build_update_batch(pid, ps_path, current_exe)
-        fh.write(bat_content)
-
-    subprocess.Popen(
-        ["cmd.exe", "/c", str(bat_path)],
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        close_fds=True,
+    _commons_download_and_apply(
+        info,
+        exe_name=EXE_NAME,
+        expected_internal=True,
+        progress_callback=progress_callback,
     )
-    sys.exit(0)
