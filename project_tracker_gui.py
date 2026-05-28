@@ -15,14 +15,9 @@ from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 
+from paths import resource_path
+
 logger = logging.getLogger(__name__)
-
-
-def _resource_path(filename: str) -> Path:
-    """Locate a bundled asset whether running from source or a PyInstaller exe."""
-    if hasattr(sys, "_MEIPASS"):
-        return Path(getattr(sys, "_MEIPASS")) / filename
-    return Path(__file__).with_name(filename)
 
 
 def _app_data_path() -> Path:
@@ -2718,7 +2713,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1180, 700)
         self.setAcceptDrops(True)
 
-        _icon_path = _resource_path("PTT_Normal.ico")
+        _icon_path = resource_path("PTT_Normal.ico")
         if _icon_path.exists():
             _icon = QIcon(str(_icon_path))
             self.setWindowIcon(_icon)
@@ -2758,7 +2753,7 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._build_logged_out_panel())
 
         # Page 1: full app content
-        app_widget = _BackgroundWidget(_resource_path("PTT_Transparent.png"))
+        app_widget = _BackgroundWidget(resource_path("PTT_Transparent.png"))
         root_layout = QHBoxLayout(app_widget)
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(0)
@@ -3357,7 +3352,7 @@ class MainWindow(QMainWindow):
         self.task_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
-        _vp = _WatermarkViewport(_resource_path("PTT_Transparent.png"))
+        _vp = _WatermarkViewport(resource_path("PTT_Transparent.png"))
         self.task_table.setViewport(_vp)
 
         header = self.task_table.horizontalHeader()
@@ -3645,7 +3640,7 @@ class MainWindow(QMainWindow):
                 raise StartupCheckError(f"Data file could not be read:\n{data_path}\n\n{exc}") from exc
 
         for asset_name in ("PTT_Normal.ico", "PTT_Transparent.png"):
-            asset_path = _resource_path(asset_name)
+            asset_path = resource_path(asset_name)
             if not asset_path.exists():
                 warnings.append(f"Bundled asset is missing: {asset_name}")
 
