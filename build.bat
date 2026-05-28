@@ -9,6 +9,24 @@ rem   pip install pyinstaller
 rem   Inno Setup 6 (https://jrsoftware.org/isinfo.php)
 rem ============================================================
 
+rem Python 3.12 soft-warn (FROZEN_BUILD_BASELINE / ADR-014)
+for /f "tokens=2" %%P in ('.venv\Scripts\python --version 2^>^&1') do set PYTHON_VERSION=%%P
+echo Detected venv Python: %PYTHON_VERSION%
+echo %PYTHON_VERSION% | findstr /b "3.12." >nul
+if errorlevel 1 (
+    echo WARNING: Canonical frozen-build venv is Python 3.12 per ADR-014 / FROZEN_BUILD_BASELINE.
+    echo          Current interpreter is %PYTHON_VERSION%. Build will proceed but the
+    echo          S1-safe bootloader profile is only verified on 3.12.
+)
+
+rem Commons preflight
+.venv\Scripts\python -c "import phoenix_commons" 2>nul
+if errorlevel 1 (
+    echo ERROR: phoenix_commons not importable in this venv.
+    echo        Run: git submodule update --init ^&^& pip install -e ./commons
+    exit /b 1
+)
+
 rem Read version from version.py
 for /f "tokens=3 delims= " %%v in ('findstr "__version__" version.py') do set "VERSION=%%~v"
 
@@ -22,8 +40,10 @@ echo  Building Project Tracking Tool v%VERSION%
 echo ============================================================
 echo.
 
-rem Step 0: sanity checks
-echo [0/4] Running sanity checks...
+rem Step 0: sanity checks + full cleanup
+echo [0/4] Running sanity checks + full cleanup...
+if exist dist  rmdir /s /q dist
+if exist build rmdir /s /q build
 findstr /C:"Current Version: v%VERSION%" README.md >nul
 if errorlevel 1 (
     echo.
@@ -53,6 +73,7 @@ echo [1/4] Running PyInstaller...
     --noconfirm ^
     --onedir ^
     --windowed ^
+    --noupx ^
     --icon=PTT_Normal.ico ^
     --name=ProjectTrackingTool ^
     --add-data="PTT_Transparent.png;." ^
@@ -62,10 +83,19 @@ echo [1/4] Running PyInstaller...
     --hidden-import=openpyxl ^
     --hidden-import=openpyxl.cell._writer ^
     --collect-submodules=openpyxl ^
+    --collect-all=phoenix_commons ^
     --collect-submodules=PySide6.QtCore ^
     --collect-submodules=PySide6.QtGui ^
     --collect-submodules=PySide6.QtWidgets ^
     --hidden-import=pyxlsb ^
+    --exclude-module=tkinter ^
+    --exclude-module=_tkinter ^
+    --exclude-module=tcl ^
+    --exclude-module=tk ^
+    --exclude-module=lib2to3 ^
+    --exclude-module=idlelib ^
+    --exclude-module=turtle ^
+    --exclude-module=turtledemo ^
     project_tracker_gui.py
 
 if errorlevel 1 (
