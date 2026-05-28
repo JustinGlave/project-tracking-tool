@@ -16,6 +16,14 @@ from zipfile import BadZipFile
 from openpyxl.utils.exceptions import InvalidFileException
 
 from paths import resource_path
+from phoenix_commons.theme import apply_dark_theme
+from phoenix_commons.widgets import (
+    PhoenixTable,
+    PrimaryButton,
+    SecondaryButton,
+    TertiaryButton,
+    UpdateBanner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -326,42 +334,12 @@ class ProjectDialog(QDialog):
 
 
 # ── Phoenix component helpers ──────────────────────────────────────────────────
-
-class PrimaryButton(QPushButton):
-    """Red primary-action button per Phoenix design system."""
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setMinimumHeight(36)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-
-class SecondaryButton(QPushButton):
-    """Blue secondary-action button per Phoenix design system."""
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("secondaryButton")
-        self.setMinimumHeight(36)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-
-class TertiaryButton(QPushButton):
-    """Outline low-emphasis button per Phoenix design system."""
-    def __init__(self, text: str, parent=None):
-        super().__init__(text, parent)
-        self.setObjectName("tertiaryButton")
-        self.setMinimumHeight(36)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-
-class PhoenixTable(QTableWidget):
-    """Read-only display table with Phoenix styling defaults."""
-    def __init__(self, rows: int, cols: int, parent=None):
-        super().__init__(rows, cols, parent)
-        self.verticalHeader().setVisible(False)
-        self.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setAlternatingRowColors(True)
+# PrimaryButton / SecondaryButton / TertiaryButton / PhoenixTable / UpdateBanner
+# are imported from phoenix_commons.widgets at the top of this module
+# (Wave 8b B5 retrofit). App-specific widgets (ReorderableTaskTable, StatCard,
+# SegmentedProgressBar, ElidingLabel, _BackgroundWidget, _WatermarkViewport,
+# ResizeHandle, _HeaderResizeHandle, _VResizeHandle, all dialogs) remain local.
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 # ── Drag-reorder table ────────────────────────────────────────────────────────
@@ -1699,48 +1677,6 @@ class _WatermarkViewport(QWidget):
         if self._pixmap is not None:
             _paint_watermark(painter, self._pixmap, self.width(), self.height(), self._OPACITY, self._SCALE)
         painter.end()
-
-
-class UpdateBanner(QFrame):
-    """Slim banner shown at the bottom of the window when an update is available."""
-
-    install_clicked = Signal()
-
-    def __init__(self, info: UpdateInfo, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("UpdateBanner")
-        self.setFixedHeight(44)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 0, 16, 0)
-
-        msg = QLabel(
-            f"🆕  Update available — v{info.latest_version} is ready. "
-            f"You're on v{info.current_version}."
-        )
-        msg.setObjectName("UpdateMsg")
-        layout.addWidget(msg, 1)
-
-        if info.release_notes:
-            notes_btn = TertiaryButton("Release Notes")
-            notes_btn.setFixedWidth(132)
-            notes_btn.clicked.connect(lambda: QMessageBox.information(
-                self, f"What's new in v{info.latest_version}",
-                info.release_notes,
-            ))
-            layout.addWidget(notes_btn)
-
-        install_btn = QPushButton("Install && Restart")
-        install_btn.setFixedWidth(150)
-        install_btn.setObjectName("InstallBtn")
-        install_btn.clicked.connect(self.install_clicked)
-        layout.addWidget(install_btn)
-
-        dismiss_btn = TertiaryButton("✕")
-        dismiss_btn.setFixedWidth(44)
-        dismiss_btn.setToolTip("Dismiss")
-        dismiss_btn.clicked.connect(self.hide)
-        layout.addWidget(dismiss_btn)
 
 
 class ResizeHandle(QFrame):
@@ -4104,7 +4040,12 @@ class MainWindow(QMainWindow):
         # Don't show a second banner if one is already visible
         if self._update_banner and self._update_banner.isVisible():
             return
-        banner = UpdateBanner(info, self)
+        banner = UpdateBanner(
+            info.current_version,
+            info.latest_version,
+            info.release_notes,
+            self,
+        )
         banner.install_clicked.connect(lambda: self._do_install(info))
         self._update_banner = banner
         self.statusBar().addPermanentWidget(banner, 1)
@@ -5678,124 +5619,6 @@ class MainWindow(QMainWindow):
         self.task_table.setColumnHidden(4, self._compact_mode)
 
 
-# ── Theme ──────────────────────────────────────────────────────────────────────
-
-_EMBEDDED_QSS = """
-QMainWindow { background-color: #0a0e27; color: #ffffff; }
-QWidget { color: #ffffff; font-family: "Segoe UI", Arial, sans-serif; font-size: 11pt; }
-QMenuBar { background-color: #0a0e27; color: #ffffff; border-bottom: 1px solid #2d3748; padding: 4px 0px; spacing: 16px; }
-QMenuBar::item:selected { background-color: #1f2937; color: #3b82f6; }
-QMenuBar::item:pressed { background-color: #1e3a8a; }
-QMenu { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 4px; padding: 4px 0px; }
-QMenu::item { padding: 8px 16px; }
-QMenu::item:selected { background-color: #1f2937; color: #3b82f6; }
-QMenu::item:pressed { background-color: #1e3a8a; }
-QMenu::separator { background-color: #2d3748; height: 1px; margin: 4px 0px; }
-QPushButton, QToolButton { background-color: #dc2626; color: #ffffff; border: none; border-radius: 6px; padding: 6px 14px; font-weight: 600; font-size: 11pt; }
-QPushButton:hover, QToolButton:hover { background-color: #b91c1c; }
-QPushButton:pressed, QToolButton:pressed { background-color: #991b1b; }
-QPushButton:focus { outline: none; border: 2px solid #3b82f6; }
-QPushButton:disabled, QToolButton:disabled { background-color: #4b5563; color: #6b7280; }
-QPushButton#secondaryButton { background-color: #1e3a8a; }
-QPushButton#secondaryButton:hover { background-color: #1e40af; }
-QToolButton#taskToolsButton { background-color: #16213d; color: #dbeafe; border: 1px solid #2d5a8e; border-radius: 6px; padding: 6px 12px; font-weight: 600; font-size: 11pt; }
-QToolButton#taskToolsButton:hover { background-color: #1e3a5f; border-color: #3b82f6; }
-QToolButton#taskToolsButton::menu-indicator { image: none; width: 0px; }
-QPushButton#tertiaryButton { background-color: transparent; border: 1px solid #4b5563; color: #3b82f6; }
-QPushButton#tertiaryButton:hover { background-color: #1f2937; border: 1px solid #3b82f6; }
-QLineEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; selection-background-color: #3b82f6; }
-QLineEdit:focus { border: 2px solid #3b82f6; }
-QLineEdit:disabled { background-color: #050810; color: #6b7280; }
-QTextEdit, QPlainTextEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; selection-background-color: #3b82f6; }
-QTextEdit:focus, QPlainTextEdit:focus { border: 2px solid #3b82f6; }
-QComboBox { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
-QComboBox:focus { border: 2px solid #3b82f6; }
-QComboBox:disabled { background-color: #050810; color: #6b7280; }
-QComboBox::drop-down { border: none; padding-right: 8px; }
-QComboBox QAbstractItemView { background-color: #141829; color: #ffffff; selection-background-color: #3b82f6; border: 1px solid #2d3748; outline: none; }
-QDateEdit { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
-QDateEdit:focus { border: 2px solid #3b82f6; }
-QSpinBox, QDoubleSpinBox { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; border-radius: 6px; padding: 6px 8px; }
-QSpinBox:focus, QDoubleSpinBox:focus { border: 2px solid #3b82f6; }
-QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button { background-color: #050810; border: none; width: 20px; }
-QCheckBox { color: #ffffff; spacing: 8px; }
-QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 1px solid #4b5563; background-color: #141829; }
-QCheckBox::indicator:hover { border: 1px solid #3b82f6; background-color: #1f2937; }
-QCheckBox::indicator:checked { background-color: #10b981; border: 1px solid #10b981; }
-QLabel { color: #ffffff; font-family: "Segoe UI", sans-serif; }
-QLabel#ProjectTitle { font-size: 14pt; font-weight: 700; color: #ffffff; }
-QLabel#ProjectSubtitle { color: #9ca3af; font-size: 10pt; }
-QLabel#SectionTitle { font-size: 12pt; font-weight: 600; color: #ffffff; }
-QLabel#StatTitle { color: #9ca3af; font-size: 7pt; }
-QLabel#StatValue { font-size: 10pt; font-weight: 700; }
-QLabel#FinDataMeta { color: #9ca3af; font-size: 8pt; }
-QLabel#MetaCaption { color: #9ca3af; font-size: 9pt; font-weight: 600; }
-QLabel#MetaValue { color: #d1d5db; font-size: 9pt; }
-QTabWidget::pane { border: 1px solid #2d3748; background-color: #141829; }
-QTabBar::tab { background-color: #050810; color: #9ca3af; padding: 6px 18px; border: 1px solid #2d3748; border-bottom: none; border-radius: 6px 6px 0 0; font-weight: 500; }
-QTabBar::tab:selected { background-color: #141829; color: #ffffff; font-weight: 600; border-bottom: 3px solid #dc2626; }
-QTabBar::tab:hover:!selected { background-color: #1f2937; color: #d1d5db; }
-QTableWidget, QTableView { background-color: transparent; alternate-background-color: rgba(15, 23, 42, 120); gridline-color: rgba(45, 55, 72, 90); border: 1px solid #2d3748; border-radius: 6px; color: #ffffff; }
-QTableWidget::item, QTableView::item { background-color: rgba(20, 24, 41, 115); padding: 6px 8px; border: none; color: #e5e7eb; }
-QTableWidget::item:alternate, QTableView::item:alternate { background-color: rgba(10, 14, 39, 95); }
-QTableWidget::item:selected, QTableView::item:selected { background-color: #2563eb; color: #ffffff; }
-QTableWidget::item:hover, QTableView::item:hover { background-color: rgba(30, 64, 175, 120); }
-QHeaderView::section { background-color: rgba(5, 8, 16, 180); color: #e5e7eb; padding: 7px 8px; border: none; border-right: 1px solid rgba(45, 55, 72, 130); border-bottom: 1px solid #2d3748; font-weight: 600; }
-QHeaderView::section:hover { background-color: #1f2937; }
-QListWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 8px; color: #ffffff; }
-QListWidget::item { background: transparent; border-radius: 6px; padding: 8px; margin: 2px 0; color: #ffffff; }
-QListWidget::item:selected { background: #1e3a8a; color: white; }
-QListWidget::item:hover:!selected { background: #1f2937; }
-QTreeWidget { background: transparent; border: 1px solid #2d3748; border-radius: 10px; padding: 4px; color: #ececec; outline: none; }
-QTreeWidget::item { border-radius: 6px; padding: 5px 8px; margin: 1px 0; }
-QTreeWidget::item:selected { background: #1e3a8a; color: white; }
-QTreeWidget::item:hover:!selected { background: #1f2937; }
-QScrollBar:vertical { background-color: #0a0e27; width: 8px; border: none; }
-QScrollBar::handle:vertical { background-color: #4b5563; border-radius: 4px; min-height: 20px; }
-QScrollBar::handle:vertical:hover { background-color: #6b7280; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; background: none; }
-QScrollBar:horizontal { background-color: #0a0e27; height: 8px; border: none; }
-QScrollBar::handle:horizontal { background-color: #4b5563; border-radius: 4px; min-width: 20px; }
-QScrollBar::handle:horizontal:hover { background-color: #6b7280; }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; border: none; background: none; }
-QGroupBox { color: #ffffff; border: 1px solid #2d3748; border-radius: 8px; margin-top: 12px; padding-top: 12px; font-weight: 600; }
-QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0px 4px; }
-QDialog { background-color: #0a0e27; }
-QMessageBox QLabel { color: #ffffff; }
-QMessageBox QPushButton { min-width: 80px; }
-QSplitter::handle { background-color: #2d3748; }
-QSplitter::handle:hover { background-color: #3b82f6; }
-QFrame[frameShape="4"], QFrame[frameShape="5"] { border: 1px solid #2d3748; background-color: transparent; }
-QToolTip { background-color: #141829; color: #ffffff; border: 1px solid #2d3748; padding: 6px 10px; border-radius: 4px; }
-QStatusBar { background-color: #050810; color: #d1d5db; border-top: 1px solid #2d3748; padding: 2px 12px; }
-QProgressBar { border: 1px solid #2d3748; border-radius: 6px; background-color: #050810; text-align: center; color: #ffffff; }
-QProgressBar::chunk { background-color: #dc2626; border-radius: 4px; }
-#Panel, #StatCard { background: rgba(20, 24, 41, 170); border: 1px solid #2d3748; border-radius: 8px; }
-#StatCard:hover { border-color: #3b82f6; background: rgba(30, 41, 59, 180); }
-#StatCard[active="true"] { border-color: #60a5fa; background: rgba(30, 58, 138, 180); }
-QLabel#VersionStatus { color: #93c5fd; font-weight: 600; padding: 0px 8px; }
-#UpdateBanner { background: rgba(30, 58, 138, 220); border-top: 1px solid #3b82f6; }
-QLabel#UpdateMsg { color: #93c5fd; font-weight: 600; }
-#InstallBtn { background: #dc2626; border: 1px solid #ef4444; color: white; font-weight: 700; }
-#InstallBtn:hover { background: #b91c1c; }
-#RestoreBtn { background: #92400e; border: 1px solid #f59e0b; color: #f59e0b; font-weight: 700; }
-#RestoreBtn:hover { background: #b45309; }
-QLabel#PassBadge { background: #10b981; color: white; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 2px 6px; }
-QLabel#FailBadge { background: #ef4444; color: white; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 2px 6px; }
-QLabel#ArchivedBadge { background: #92400e; color: #f59e0b; border-radius: 8px; font-weight: 700; font-size: 10pt; padding: 0px 10px; }
-QFrame#ResizeHandle, QFrame#VResizeHandle { background: #2d3748; border: none; }
-QFrame#ResizeHandle:hover, QFrame#VResizeHandle:hover { background: #3b82f6; }
-QPushButton#Div25Btn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
-QPushButton#Div25Btn:hover { background: #2d5a8e; color: #87c3ff; }
-QPushButton#Div25Btn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
-QPushButton#WebProIdBtn { background: #1e3a5f; border: 1px solid #2d5a8e; border-radius: 6px; color: #5ba3f5; font-weight: 600; padding: 2px 6px; }
-QPushButton#WebProIdBtn:hover { background: #2d5a8e; color: #87c3ff; }
-QPushButton#WebProIdBtn:disabled { background: #1a1a1a; border: 1px solid #333333; color: #555555; }
-QPlainTextEdit#ReadOnlyNotes { background: #050810; color: #9ca3af; border: 1px solid #2d3748; }
-QLabel#errorLabel { color: #ef4444; }
-QLabel#dialogTitle { font-size: 18pt; font-weight: 700; color: #ffffff; }
-QLabel#dialogSubtitle { font-size: 11pt; color: #9ca3af; }
-"""
 
 
 class AddressEntryDialog(QDialog):
@@ -6265,8 +6088,28 @@ class BugSuggestionDialog(QDialog):
 
 
 def apply_phoenix_theme(app: QApplication) -> None:
-    app.setStyle("Fusion")
-    app.setStyleSheet(_EMBEDDED_QSS)
+    """Apply the Phoenix Controls dark-navy theme — two-layer compose.
+
+    Wave 8b B4 retrofit:
+      1. ``phoenix_commons.theme.apply_dark_theme(app)`` provides the
+         System A baseline (Fusion + canonical QPalette + commons QSS
+         with DEFAULT_BRAND sentinel substitution).
+      2. The repo-root ``phoenix_style.qss`` is appended on top to add
+         Job-Tracker-specific selectors that commons does not carry
+         (``#StatCard``, ``#ProjectTitle``, ``#FinDataMeta``,
+         ``#taskToolsButton``, ``#ResizeHandle``, ``#VResizeHandle``,
+         ``#PassBadge``, ``#FailBadge``, ``#ArchivedBadge``,
+         ``#RestoreBtn``, ``#WebProIdBtn``, ``#ReadOnlyNotes``, etc.).
+
+    If the repo-root QSS is unreadable, commons baseline still applies
+    — only the app-specific selectors revert to defaults.
+    """
+    apply_dark_theme(app)
+    try:
+        with open(resource_path("phoenix_style.qss"), "r", encoding="utf-8") as fh:
+            app.setStyleSheet(app.styleSheet() + "\n" + fh.read())
+    except OSError:
+        pass
 
 
 
