@@ -12,11 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - CHANGELOG.md (this file) — Operational Hardening Sprint
   2026-05-19.
 
-### Pending
-- Phase 8b retrofit to commons-backed pattern per
-  MIGRATION_RULES.md § Migration order. Largest surface of any
-  Phoenix tool retrofit; `starter_package/` deletion planned in
-  the same PR.
+### Changed
+- Wave 8b retrofit to commons-backed pattern in progress on
+  branch `phase-8b-job-tracker-retrofit`. B1-B5 facades complete
+  (commons submodule, paths/updater/theme/widget facades);
+  `version.py` unchanged at 1.8.5 (tag-skip per Decision #1).
+
+### Removed
+- `starter_package/` directory — historical Phoenix-tool scaffold
+  that was bundled in this repo but never imported at runtime.
+  Its updater + GUI patterns were ported into commons during
+  Phase 1/3 of the platform rollout. Deleted at Wave 8b B7 per
+  Decision #2.
 
 ## [1.8.5] — 2026-05-12
 

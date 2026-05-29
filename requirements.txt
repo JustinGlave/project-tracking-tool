@@ -5,3 +5,7 @@ shiboken6==6.10.2
 openpyxl==3.1.5
 pyxlsb==1.0.10
 reportlab==4.4.10
+
+# Commons consumption (editable submodule install per ADR-015).
+# Added at Wave 8b B1 (2026-05-27).
+-e ./commons

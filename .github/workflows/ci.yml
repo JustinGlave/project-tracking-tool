@@ -13,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -20,7 +22,12 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: phoenix_commons import smoke
+        run: python -c "import phoenix_commons; print('phoenix_commons', phoenix_commons.__version__)"
 
       - name: Syntax check all project Python files
         run: |
