@@ -8,15 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-- CHANGELOG.md (this file) — Operational Hardening Sprint
-  2026-05-19.
+## [1.8.6] — 2026-05-30
+
+Wave 8b commons retrofit + release hardening + starter_package
+removal — no functional changes.
 
 ### Changed
-- Wave 8b retrofit to commons-backed pattern in progress on
-  branch `phase-8b-job-tracker-retrofit`. B1-B5 facades complete
-  (commons submodule, paths/updater/theme/widget facades);
-  `version.py` unchanged at 1.8.5 (tag-skip per Decision #1).
+- **Wave 8b commons retrofit complete** (merged 2026-05-28,
+  commit `6a0d60b`). Migrated to commons-backed pattern per
+  ADR-015 (`phoenix-commons` git submodule + editable install).
+  Theme + widgets + paths + updater now facade through
+  `phoenix_commons` rather than local duplicates. Local QSS
+  overlay preserved (two-layer compose pattern) for app-specific
+  selectors (`#StatCard`, `#taskToolsButton`, `#FinDataMeta`,
+  `#ResizeHandle`, `#PassBadge`, etc.). **AppId absence preserved
+  byte-for-byte** in `installer.iss` (per Decision #8 hard rule —
+  v1.6.0..v1.8.5 users have AppName-hashed upgrade detection).
+  Full-folder updater payload contract preserved
+  (`expected_internal=True`). Detailed reports under
+  `phoenix-commons/docs/ui-platform-baseline-v1/WAVE_8B_*.md`
+  + `PHASE_8B_JOB_TRACKER_REPORT.md`.
+- **Build pipeline hardened** per FROZEN_BUILD_BASELINE
+  (Wave 8b B8, merged 2026-05-28). `build.bat` now enforces
+  Python 3.12 soft-warn + Step 0 full cleanup +
+  `--noupx` + `--collect-all=phoenix_commons` + 8× stdlib
+  `--exclude-module` flags, on top of existing sanity-check
+  pipeline (README version + py_compile + unittest discover +
+  post-build zip layout verify). S1-safe profile per ADR-014.
 
 ### Removed
 - `starter_package/` directory — historical Phoenix-tool scaffold
@@ -24,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Its updater + GUI patterns were ported into commons during
   Phase 1/3 of the platform rollout. Deleted at Wave 8b B7 per
   Decision #2.
+
+### Added
+- CHANGELOG.md (this file) — Operational Hardening Sprint
+  2026-05-19.
 
 ## [1.8.5] — 2026-05-12
 

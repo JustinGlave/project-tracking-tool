@@ -2,7 +2,7 @@
 
 A desktop application for tracking ATS project tasks, built for the ATS team.
 
-**Current Version: v1.8.5**
+**Current Version: v1.8.6**
 
 ---
 
