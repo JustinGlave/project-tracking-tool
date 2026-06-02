@@ -2778,6 +2778,14 @@ class MainWindow(QMainWindow):
         self.search_edit.textChanged.connect(self.refresh_project_list)
         panel_layout.addWidget(self.search_edit)
 
+        self.rss_filter_combo = QComboBox()
+        self.rss_filter_combo.addItem("All projects", None)
+        self.rss_filter_combo.addItem("📎 Has RSS", True)
+        self.rss_filter_combo.addItem("No RSS", False)
+        self.rss_filter_combo.setToolTip("Filter projects by whether they have an RSS attachment")
+        self.rss_filter_combo.currentIndexChanged.connect(self.refresh_project_list)
+        panel_layout.addWidget(self.rss_filter_combo)
+
         sort_row = QHBoxLayout()
         sort_row.setSpacing(4)
         self.sort_combo = QComboBox()
@@ -4760,11 +4768,17 @@ class MainWindow(QMainWindow):
         search_text = self.search_edit.text().strip() if hasattr(self, "search_edit") else ""
         sort_by = self.sort_combo.currentData() if hasattr(self, "sort_combo") else "updated"
         sort_asc = self.sort_dir_btn.isChecked() if hasattr(self, "sort_dir_btn") else False
+        has_rss = (
+            self.rss_filter_combo.currentData()
+            if hasattr(self, "rss_filter_combo")
+            else None
+        )
         projects = self.backend.list_projects(
             search_text,
             include_test=getattr(self, "_show_test_jobs", False),
             sort_by=sort_by,
             sort_asc=sort_asc,
+            has_rss=has_rss,
         )
         selected_project_id = self.current_project_id
 
@@ -4796,6 +4810,8 @@ class MainWindow(QMainWindow):
                 job_name = job_name[:46] + "…"
             if project.pinned:
                 job_name = "📌 " + job_name
+            if project.rss_files:
+                job_name = f"{job_name} 📎"
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, project.id)

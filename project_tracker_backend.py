@@ -546,6 +546,7 @@ class ProjectTrackerBackend:
         include_test: bool = True,
         sort_by: str = "updated",
         sort_asc: bool = False,
+        has_rss: Optional[bool] = None,
     ) -> list[ProjectRecord]:
         data = self._load_data()
         search_value = search_text.strip().casefold()
@@ -561,6 +562,14 @@ class ProjectTrackerBackend:
                 or search_value in str(item.get("job_number", "")).casefold()
                 or search_value in str(item.get("project_manager", "")).casefold()
                 or search_value in str(item.get("sales_engineer", "")).casefold()
+            ]
+        if has_rss is not None:
+            # Use the same migration-aware resolution as ``_project_from_dict``
+            # so a legacy single-string csv_file_path counts as "has RSS" too.
+            project_dicts = [
+                item
+                for item in project_dicts
+                if bool(_migrate_rss_files(item)) is bool(has_rss)
             ]
 
         key_fn: Any

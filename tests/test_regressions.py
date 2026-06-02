@@ -437,5 +437,59 @@ class V185RegressionTests(TempWorkspaceTest):
         self.assertIsNone(result)
 
 
+class JTF1RSSFilterTests(TempWorkspaceTest):
+    """Backend filter behavior for the JTF-1 RSS filter dropdown."""
+
+    def _setup_three_projects(self) -> ProjectTrackerBackend:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        backend.create_project(ProjectRecord(job_name="Alpha", job_number="A-1"))
+        backend.create_project(ProjectRecord(job_name="Beta", job_number="B-2"))
+        backend.create_project(ProjectRecord(job_name="Gamma", job_number="G-3"))
+        # Attach an RSS entry to Beta and Gamma by editing the stored list directly.
+        beta = next(p for p in backend.list_projects() if p.job_number == "B-2")
+        gamma = next(p for p in backend.list_projects() if p.job_number == "G-3")
+        assert beta.id is not None and gamma.id is not None
+        backend.update_project(
+            beta.id,
+            rss_files=[{"name": "feed", "path": "x.csv", "rows": []}],
+        )
+        backend.update_project(
+            gamma.id,
+            rss_files=[{"name": "other", "path": "y.csv", "rows": []}],
+        )
+        return backend
+
+    def test_has_rss_true_returns_only_projects_with_rss(self) -> None:
+        backend = self._setup_three_projects()
+        with_rss = backend.list_projects(has_rss=True)
+        names = sorted(p.job_name for p in with_rss)
+        self.assertEqual(names, ["Beta", "Gamma"])
+
+    def test_has_rss_false_returns_only_projects_without_rss(self) -> None:
+        backend = self._setup_three_projects()
+        without_rss = backend.list_projects(has_rss=False)
+        names = sorted(p.job_name for p in without_rss)
+        self.assertEqual(names, ["Alpha"])
+
+    def test_has_rss_none_returns_all_projects(self) -> None:
+        backend = self._setup_three_projects()
+        all_projects = backend.list_projects(has_rss=None)
+        names = sorted(p.job_name for p in all_projects)
+        self.assertEqual(names, ["Alpha", "Beta", "Gamma"])
+
+    def test_has_rss_filter_composes_with_text_search(self) -> None:
+        backend = self._setup_three_projects()
+        # Text matches Beta + Gamma's first letters; RSS filter further matches.
+        matches = backend.list_projects(search_text="B", has_rss=True)
+        names = sorted(p.job_name for p in matches)
+        self.assertEqual(names, ["Beta"])
+
+        # Text search alone (no RSS filter) returns Beta only because "B"
+        # matches the job number prefix; sanity-check no contamination.
+        matches_all = backend.list_projects(search_text="B")
+        names_all = sorted(p.job_name for p in matches_all)
+        self.assertEqual(names_all, ["Beta"])
+
+
 if __name__ == "__main__":
     unittest.main()
