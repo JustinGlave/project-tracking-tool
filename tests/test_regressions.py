@@ -437,6 +437,109 @@ class V185RegressionTests(TempWorkspaceTest):
         self.assertIsNone(result)
 
 
+class JTF3OrderStatusTests(TempWorkspaceTest):
+    """JTF-3 — Valves Ordered task signal + order_status filter + rollup."""
+
+    def _backend_with_three(self) -> ProjectTrackerBackend:
+        """Three projects: A has Valves Ordered (complete), B has it (incomplete),
+        C has no Valves Ordered task at all. All Phoenix-template defaults."""
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        pid_a = backend.create_project(ProjectRecord(job_name="Alpha", job_number="A-1"))
+        pid_b = backend.create_project(ProjectRecord(job_name="Beta", job_number="B-2"))
+        pid_c = backend.create_project(ProjectRecord(job_name="Gamma", job_number="G-3"))
+
+        # Alpha — complete its Valves Ordered task.
+        valves_a = next(
+            t for t in backend.list_tasks(pid_a) if t.task_name == "Valves Ordered"
+        )
+        assert valves_a.id is not None
+        backend.set_task_completed(valves_a.id, True)
+
+        # Beta keeps its Valves Ordered task uncompleted (default state).
+
+        # Gamma — delete its Valves Ordered task so the project has no signal task.
+        valves_c = next(
+            t for t in backend.list_tasks(pid_c) if t.task_name == "Valves Ordered"
+        )
+        assert valves_c.id is not None
+        backend.delete_task(valves_c.id)
+        return backend
+
+    # ── Filter behavior ────────────────────────────────────────────────────
+    def test_order_status_ordered_returns_only_projects_with_completed_valves_task(self) -> None:
+        backend = self._backend_with_three()
+        ordered = backend.list_projects(order_status="ordered")
+        self.assertEqual(sorted(p.job_name for p in ordered), ["Alpha"])
+
+    def test_order_status_missing_returns_incomplete_or_absent_signal(self) -> None:
+        backend = self._backend_with_three()
+        missing = backend.list_projects(order_status="missing")
+        self.assertEqual(sorted(p.job_name for p in missing), ["Beta", "Gamma"])
+
+    def test_order_status_none_returns_all_projects(self) -> None:
+        backend = self._backend_with_three()
+        all_projects = backend.list_projects(order_status=None)
+        self.assertEqual(sorted(p.job_name for p in all_projects), ["Alpha", "Beta", "Gamma"])
+
+    def test_order_status_invalid_value_raises(self) -> None:
+        backend = self._backend_with_three()
+        with self.assertRaises(ValueError):
+            backend.list_projects(order_status="maybe")
+
+    # ── Composition with other filters ─────────────────────────────────────
+    def test_order_status_composes_with_rss_filter(self) -> None:
+        backend = self._backend_with_three()
+        # Attach RSS to Beta so RSS=True returns just Beta; combined with
+        # order_status="missing" should still return just Beta.
+        beta = next(p for p in backend.list_projects() if p.job_name == "Beta")
+        assert beta.id is not None
+        backend.update_project(
+            beta.id,
+            rss_files=[{"name": "feed", "path": "x.csv", "rows": []}],
+        )
+        combined = backend.list_projects(has_rss=True, order_status="missing")
+        self.assertEqual([p.job_name for p in combined], ["Beta"])
+
+    def test_order_status_composes_with_text_search(self) -> None:
+        backend = self._backend_with_three()
+        matches = backend.list_projects(search_text="Alpha", order_status="ordered")
+        self.assertEqual([p.job_name for p in matches], ["Alpha"])
+        no_match = backend.list_projects(search_text="Alpha", order_status="missing")
+        self.assertEqual([p.job_name for p in no_match], [])
+
+    # ── Rollup method ──────────────────────────────────────────────────────
+    def test_rollup_counts_match_filter_results(self) -> None:
+        backend = self._backend_with_three()
+        rollup = backend.get_order_status_rollup()
+        self.assertEqual(rollup["ordered_count"], 1)
+        self.assertEqual(rollup["missing_count"], 2)
+        ordered_names = sorted(r["job_name"] for r in rollup["ordered"])
+        missing_names = sorted(r["job_name"] for r in rollup["missing"])
+        self.assertEqual(ordered_names, ["Alpha"])
+        self.assertEqual(missing_names, ["Beta", "Gamma"])
+
+    def test_rollup_excludes_test_jobs(self) -> None:
+        backend = ProjectTrackerBackend(self.tmp / "data.json")
+        backend.create_project(ProjectRecord(job_name="Real", job_number="R-1"))
+        backend.create_project(
+            ProjectRecord(job_name="Training", job_number="T-1", is_test=True)
+        )
+        rollup = backend.get_order_status_rollup()
+        # Real has Valves Ordered task (incomplete) → counts as missing.
+        # Training is excluded entirely.
+        total = rollup["ordered_count"] + rollup["missing_count"]
+        self.assertEqual(total, 1)
+        all_names = [r["job_name"] for r in rollup["ordered"] + rollup["missing"]]
+        self.assertNotIn("Training", all_names)
+
+    def test_rollup_rows_carry_minimum_columns_needed_by_modal(self) -> None:
+        backend = self._backend_with_three()
+        rollup = backend.get_order_status_rollup()
+        sample = (rollup["missing"] or rollup["ordered"])[0]
+        for key in ("id", "job_name", "job_number", "project_manager", "updated_at"):
+            self.assertIn(key, sample)
+
+
 class JTF2WebProIDsTests(TempWorkspaceTest):
     """Backend data-compatibility behavior for JTF-2 multi-WebPro support."""
 

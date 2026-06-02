@@ -203,6 +203,31 @@ PHOENIX_TASKS: tuple[dict[str, Any], ...] = tuple(
 )
 
 
+# JTF-3 — task names that count as "parts/valves ordered" signal.
+# Decision D1a (operator-approved 2026-06-02): start narrow with just the
+# canonical "Valves Ordered" task that already exists in both DEFAULT_TASKS
+# and PHOENIX_TASKS. Widen this set in a follow-up if needed.
+ORDER_SIGNAL_TASKS: frozenset[str] = frozenset({"Valves Ordered"})
+
+
+def _project_has_order_signal(project_id: int, tasks: list[dict[str, Any]]) -> bool:
+    """Return True if any of the project's tasks in ORDER_SIGNAL_TASKS is complete.
+
+    Pure read against the raw task dicts — no schema change. Case-insensitive
+    name match so a stray re-cased task name (e.g. "valves ordered") still
+    counts as the canonical signal.
+    """
+    targets = {name.casefold() for name in ORDER_SIGNAL_TASKS}
+    for task in tasks:
+        if int(task.get("project_id", 0)) != project_id:
+            continue
+        if str(task.get("task_name", "")).casefold() not in targets:
+            continue
+        if bool(task.get("is_complete", False)):
+            return True
+    return False
+
+
 def _migrate_rss_files(project_dict: dict) -> list:
     """Return rss_files list, migrating from legacy csv_file_path if needed."""
     rss_files = project_dict.get("rss_files")
@@ -619,6 +644,7 @@ class ProjectTrackerBackend:
         sort_by: str = "updated",
         sort_asc: bool = False,
         has_rss: Optional[bool] = None,
+        order_status: Optional[str] = None,
     ) -> list[ProjectRecord]:
         data = self._load_data()
         search_value = search_text.strip().casefold()
@@ -648,6 +674,19 @@ class ProjectTrackerBackend:
                 item
                 for item in project_dicts
                 if bool(_migrate_rss_files(item)) is bool(has_rss)
+            ]
+        if order_status is not None:
+            normalized_status = str(order_status).strip().casefold()
+            if normalized_status not in {"ordered", "missing"}:
+                raise ValueError(
+                    f"order_status must be 'ordered', 'missing', or None — got {order_status!r}"
+                )
+            want_ordered = normalized_status == "ordered"
+            all_tasks = data.get("tasks", [])
+            project_dicts = [
+                item
+                for item in project_dicts
+                if _project_has_order_signal(int(item["id"]), all_tasks) is want_ordered
             ]
 
         key_fn: Any
@@ -1957,6 +1996,49 @@ class ProjectTrackerBackend:
             n for n in data.get("task_notes", []) if int(n["id"]) != note_id
         ]
         self._save_data(data)
+
+    def get_order_status_rollup(self) -> dict:
+        """JTF-3 — count + listing of jobs missing vs having a parts/valves order signal.
+
+        A project is "ordered" iff any of its tasks named in
+        :data:`ORDER_SIGNAL_TASKS` is marked complete. Test jobs are excluded
+        so the Home button reflects real-world work. Returned per-project
+        rows carry the minimum the modal needs (id, job_name, job_number,
+        project_manager, updated_at); nothing schema-changing.
+        """
+        data = self._load_data()
+        projects = data.get("projects", [])
+        tasks = data.get("tasks", [])
+
+        active_projects = [p for p in projects if not p.get("is_test", False)]
+
+        def _row(p: dict) -> dict:
+            return {
+                "id": int(p["id"]),
+                "job_name": str(p.get("job_name", "") or ""),
+                "job_number": str(p.get("job_number", "") or ""),
+                "project_manager": str(p.get("project_manager", "") or ""),
+                "updated_at": str(p.get("updated_at", "") or ""),
+            }
+
+        ordered: list[dict] = []
+        missing: list[dict] = []
+        for project_dict in active_projects:
+            if _project_has_order_signal(int(project_dict["id"]), tasks):
+                ordered.append(_row(project_dict))
+            else:
+                missing.append(_row(project_dict))
+
+        # Sort each list by job_number for a stable, scan-friendly view.
+        ordered.sort(key=lambda r: r["job_number"].casefold())
+        missing.sort(key=lambda r: r["job_number"].casefold())
+
+        return {
+            "ordered_count": len(ordered),
+            "missing_count": len(missing),
+            "ordered": ordered,
+            "missing": missing,
+        }
 
     def get_dashboard_stats(self) -> dict:
         """Summary statistics for the home screen dashboard."""

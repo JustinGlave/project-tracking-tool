@@ -107,6 +107,7 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -2703,6 +2704,105 @@ class WebProIdsDialog(QDialog):
         return [self._list.item(i).text() for i in range(self._list.count())]
 
 
+class OrderStatusDialog(QDialog):
+    """JTF-3 — modal listing of jobs by parts/valves order status.
+
+    Two tabs: "Missing Orders" and "Ordered". Each tab is a sortable
+    QTableWidget keyed to a list of dicts from
+    ``ProjectTrackerBackend.get_order_status_rollup``. Double-click a row to
+    select that project in the main window and close the dialog.
+    """
+
+    project_selected = Signal(int)  # emitted with project id on double-click
+
+    _COLS = ("Job #", "Job Name", "PM", "Updated")
+
+    def __init__(self, rollup: dict, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Valve / Parts Order Status")
+        self.setModal(True)
+        self.resize(720, 460)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(16, 14, 16, 12)
+
+        title = QLabel("Jobs by parts/valves order status")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Based on the existing \"Valves Ordered\" task. "
+            "Double-click a row to open that project."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self._tabs = QTabWidget()
+        self._missing_table = self._build_table(rollup.get("missing", []))
+        self._ordered_table = self._build_table(rollup.get("ordered", []))
+        self._tabs.addTab(
+            self._missing_table,
+            f"Missing Orders ({rollup.get('missing_count', 0)})",
+        )
+        self._tabs.addTab(
+            self._ordered_table,
+            f"Ordered ({rollup.get('ordered_count', 0)})",
+        )
+        layout.addWidget(self._tabs, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.setAutoDefault(False)
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    def _build_table(self, rows: list[dict]) -> QTableWidget:
+        table = QTableWidget(len(rows), len(self._COLS))
+        table.setHorizontalHeaderLabels(list(self._COLS))
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.verticalHeader().setVisible(False)
+        table.setSortingEnabled(False)  # rows arrive pre-sorted by backend
+        # Stretch the Job Name column; keep the others sized to content.
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+
+        for row_index, row in enumerate(rows):
+            number_item = QTableWidgetItem(row.get("job_number", ""))
+            number_item.setData(Qt.ItemDataRole.UserRole, int(row.get("id", 0)))
+            table.setItem(row_index, 0, number_item)
+            table.setItem(row_index, 1, QTableWidgetItem(row.get("job_name", "")))
+            table.setItem(row_index, 2, QTableWidgetItem(row.get("project_manager", "")))
+            updated = str(row.get("updated_at", "") or "")
+            # Trim ISO time portion for readability — "2026-05-30T14:22:01" → "2026-05-30 14:22"
+            updated = updated.replace("T", " ")[:16] if updated else ""
+            table.setItem(row_index, 3, QTableWidgetItem(updated))
+
+        table.doubleClicked.connect(lambda _idx, t=table: self._emit_selection(t))
+        return table
+
+    def _emit_selection(self, table: QTableWidget) -> None:
+        row = table.currentRow()
+        if row < 0:
+            return
+        item = table.item(row, 0)
+        if item is None:
+            return
+        pid = item.data(Qt.ItemDataRole.UserRole)
+        if pid is None:
+            return
+        self.project_selected.emit(int(pid))
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
@@ -3026,6 +3126,19 @@ class MainWindow(QMainWindow):
             cards_row.addWidget(card)
         layout.addLayout(cards_row)
 
+        # JTF-3 — single button that opens the Valve/Parts Order Status modal.
+        # Text refreshed by _refresh_dashboard with live counts.
+        order_btn_row = QHBoxLayout()
+        order_btn_row.setSpacing(0)
+        self._dash_order_status_btn = QPushButton("Valve/Parts Order Status")
+        self._dash_order_status_btn.setToolTip(
+            "View jobs grouped by whether their \"Valves Ordered\" task is complete."
+        )
+        self._dash_order_status_btn.clicked.connect(self._open_order_status_dialog)
+        order_btn_row.addWidget(self._dash_order_status_btn)
+        order_btn_row.addStretch(1)
+        layout.addLayout(order_btn_row)
+
         lists_row = QHBoxLayout()
         lists_row.setSpacing(16)
 
@@ -3102,6 +3215,18 @@ class MainWindow(QMainWindow):
         self._dash_projects_card.set_value(str(stats["project_count"]))
         self._dash_incomplete_card.set_value(str(stats["incomplete_count"]))
         self._dash_tasks_card.set_value(str(stats["total_tasks"]))
+
+        # JTF-3 — refresh the order-status button label with live counts.
+        if hasattr(self, "_dash_order_status_btn"):
+            try:
+                rollup = self.backend.get_order_status_rollup()
+                missing = int(rollup.get("missing_count", 0))
+                ordered = int(rollup.get("ordered_count", 0))
+                self._dash_order_status_btn.setText(
+                    f"Valve/Parts Order Status — {missing} missing / {ordered} ordered"
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                self._dash_order_status_btn.setText("Valve/Parts Order Status")
 
         self._dash_contract_table.setRowCount(0)
         for row, proj in enumerate(stats["top_contract"]):
@@ -4095,6 +4220,30 @@ class MainWindow(QMainWindow):
 
         dlg = FinancialsDashboardDialog(provider=self._financials_provider, parent=self)
         dlg.exec()
+
+    def _open_order_status_dialog(self) -> None:
+        """JTF-3 — Home button handler. Show modal with Missing/Ordered tabs."""
+        try:
+            rollup = self.backend.get_order_status_rollup()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.critical(
+                self, "Order Status Unavailable",
+                f"Could not compute order status:\n{exc}",
+            )
+            return
+        dlg = OrderStatusDialog(rollup, parent=self)
+        dlg.project_selected.connect(self._select_project_by_id)
+        dlg.exec()
+
+    def _select_project_by_id(self, project_id: int) -> None:
+        """Select a project in the sidebar by id. Used by JTF-3 modal drill-down."""
+        for row in range(self.project_list.count()):
+            item = self.project_list.item(row)
+            if item is None:
+                continue
+            if int(item.data(Qt.ItemDataRole.UserRole) or 0) == int(project_id):
+                self.project_list.setCurrentItem(item)
+                return
 
     def _open_address_book(self) -> None:
         dlg = AddressBookDialog(
