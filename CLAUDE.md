@@ -65,3 +65,7 @@ Validate the auto-updater zip before releasing:
 ## Commit style
 
 - No `Co-Authored-By` trailers in commit messages or PR descriptions.
+
+## Documentation output
+
+- New audit reports, feature plans, and design docs go in `docs/` at the Job Tracker repo root — not at the repo root, not in `commons/docs/`.
