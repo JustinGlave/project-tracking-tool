@@ -14,3 +14,8 @@ PTT Normal.jpg
 PTT Transparent.ico
 PTT Transparent.jpg
 .claude/
+.venv/
+.venv*/
+venv/
+env/
+ENV/
