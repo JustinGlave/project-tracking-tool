@@ -252,7 +252,13 @@ class ProjectDialog(QDialog):
         self.contract_value_edit    = QLineEdit(project.contract_value if project else "")
         self.job_docs_edit          = QLineEdit(project.job_docs if project else "")
         self.div25_url_edit         = QLineEdit(project.div25_url if project else "")
-        self.webpro_id_edit         = QLineEdit(project.webpro_id if project else "")
+        # WebPro IDs: full list lives in self._webpro_ids; the button surfaces
+        # the count and opens WebProIdsDialog for add/remove. Editing the legacy
+        # single-string project.webpro_id directly would silently drop any
+        # additional IDs on save, so we round-trip the list end-to-end.
+        self._webpro_ids: list[str] = list(project.webpro_ids) if project else []
+        self.webpro_ids_btn = QPushButton(self._webpro_ids_label())
+        self.webpro_ids_btn.clicked.connect(self._edit_webpro_ids)
 
         self.template_combo = QComboBox()
         self.template_combo.addItem("Phoenix", "phoenix")
@@ -265,7 +271,7 @@ class ProjectDialog(QDialog):
             form_layout.addRow("Task Template",       self.template_combo)
         form_layout.addRow("Job name *",          self.job_name_edit)
         form_layout.addRow("Job number *",        self.job_number_edit)
-        form_layout.addRow("WebPro ID",           self.webpro_id_edit)
+        form_layout.addRow("WebPro IDs",          self.webpro_ids_btn)
         form_layout.addRow("Project manager",     self.pm_edit)
         form_layout.addRow("Sales engineer",      self.sales_edit)
         form_layout.addRow("Target completion",   completion_row)
@@ -317,11 +323,25 @@ class ProjectDialog(QDialog):
             contract_value=self.contract_value_edit.text().strip(),
             job_docs=self.job_docs_edit.text().strip(),
             div25_url=self.div25_url_edit.text().strip(),
-            webpro_id=self.webpro_id_edit.text().strip(),
+            webpro_ids=list(self._webpro_ids),
         )
 
     def get_template(self) -> str:
         return self.template_combo.currentData()
+
+    def _webpro_ids_label(self) -> str:
+        if not self._webpro_ids:
+            return "Add WebPro IDs…"
+        if len(self._webpro_ids) == 1:
+            return f"WebPro ID: {self._webpro_ids[0]}"
+        return f"{len(self._webpro_ids)} WebPro IDs"
+
+    def _edit_webpro_ids(self) -> None:
+        dlg = WebProIdsDialog(list(self._webpro_ids), parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._webpro_ids = dlg.ids()
+        self.webpro_ids_btn.setText(self._webpro_ids_label())
 
     def accept(self) -> None:
         if not self.job_name_edit.text().strip():
@@ -2600,6 +2620,89 @@ class BulkExportDialog(QDialog):
         return ids
 
 
+class WebProIdsDialog(QDialog):
+    """Modal editor for the WebPro ID list on a project (JTF-2).
+
+    Layout: a list of current IDs, a small input row with ``+ Add``,
+    ``Remove Selected``, and standard OK / Cancel. After Accepted the
+    caller reads the final list via :meth:`ids`. The backend re-normalizes
+    on save, so it's safe to expose the raw widget contents here.
+    """
+
+    def __init__(
+        self,
+        ids: list[str],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("WebPro IDs")
+        self.setModal(True)
+        self.resize(360, 320)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+        layout.setContentsMargins(16, 14, 16, 12)
+
+        hint = QLabel("Add one or more WebPro IDs for this job.")
+        hint.setObjectName("hint")
+        layout.addWidget(hint)
+
+        self._list = QListWidget()
+        self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        for value in ids:
+            if value:
+                self._list.addItem(QListWidgetItem(str(value)))
+        layout.addWidget(self._list, 1)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("Enter WebPro ID and press + Add")
+        self._input.returnPressed.connect(self._add_from_input)
+        add_btn = QPushButton("+ Add")
+        add_btn.setDefault(False)
+        add_btn.setAutoDefault(False)
+        add_btn.clicked.connect(self._add_from_input)
+        add_row.addWidget(self._input, 1)
+        add_row.addWidget(add_btn)
+        layout.addLayout(add_row)
+
+        remove_btn = QPushButton("Remove Selected")
+        remove_btn.setAutoDefault(False)
+        remove_btn.clicked.connect(self._remove_selected)
+        layout.addWidget(remove_btn)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _add_from_input(self) -> None:
+        text = self._input.text().strip()
+        if not text:
+            return
+        # Live dedupe (case-insensitive) so the user sees immediate feedback.
+        # Backend normalize is the source of truth and re-applies this anyway.
+        existing = {self._list.item(i).text().casefold() for i in range(self._list.count())}
+        if text.casefold() in existing:
+            self._input.clear()
+            return
+        self._list.addItem(QListWidgetItem(text))
+        self._input.clear()
+
+    def _remove_selected(self) -> None:
+        # Take from highest index downward so removals don't shift earlier rows.
+        rows = sorted({self._list.row(item) for item in self._list.selectedItems()}, reverse=True)
+        for row in rows:
+            self._list.takeItem(row)
+
+    def ids(self) -> list[str]:
+        return [self._list.item(i).text() for i in range(self._list.count())]
+
+
 class MainWindow(QMainWindow):
     _update_ready = Signal()  # emitted from bg thread when a new version is found
 
@@ -3332,12 +3435,13 @@ class MainWindow(QMainWindow):
         project = self.backend.get_project(self.current_project_id)
         if not project:
             return
-        text, ok = QInputDialog.getText(
-            self, "Edit WebPro ID", "WebPro ID:", text=project.webpro_id or ""
-        )
-        if not ok:
+        dlg = WebProIdsDialog(list(project.webpro_ids), parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        self.backend.update_project(self.current_project_id, webpro_id=text.strip())
+        # Backend re-normalizes (strip, drop empties, case-insensitive dedupe,
+        # preserve insertion order) and dual-writes both legacy webpro_id and
+        # the new webpro_ids list.
+        self.backend.update_project(self.current_project_id, webpro_ids=dlg.ids())
         self.load_current_project()
 
     def _open_notes(self) -> None:
@@ -4908,7 +5012,21 @@ class MainWindow(QMainWindow):
         self.contract_value_value.setText(
             f"${parse_currency(project.contract_value):,.0f}" if project.contract_value else "—"
         )
-        self.webpro_id_btn.setText(project.webpro_id or "—")
+        # WebPro display: "—" when none, the single ID when one, "N WebPro IDs"
+        # when multiple. Tooltip always shows the full list so it stays one
+        # click away regardless of which display mode is active.
+        ids = project.webpro_ids
+        if not ids:
+            self.webpro_id_btn.setText("—")
+            self.webpro_id_btn.setToolTip("Click to add WebPro IDs")
+        elif len(ids) == 1:
+            self.webpro_id_btn.setText(ids[0])
+            self.webpro_id_btn.setToolTip(f"WebPro ID: {ids[0]}\nClick to edit.")
+        else:
+            self.webpro_id_btn.setText(f"{len(ids)} WebPro IDs")
+            self.webpro_id_btn.setToolTip(
+                "WebPro IDs:\n  • " + "\n  • ".join(ids) + "\n\nClick to edit."
+            )
         self.webpro_id_btn.setEnabled(not self._current_user_view_only())
         self._div25_url = project.div25_url or ""
         self.div25_btn.setEnabled(bool(self._div25_url))
@@ -5205,7 +5323,7 @@ class MainWindow(QMainWindow):
                 contract_value=record.contract_value,
                 job_docs=record.job_docs,
                 div25_url=record.div25_url,
-                webpro_id=record.webpro_id,
+                webpro_ids=record.webpro_ids,
             )
         except _EXPECTED_APP_ERRORS as exc:
             QMessageBox.critical(self, "Unable to update project", str(exc))

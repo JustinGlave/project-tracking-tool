@@ -38,7 +38,8 @@ class ProjectRecord:
     contract_value: str = ""
     job_docs: str = ""
     div25_url: str = ""
-    webpro_id: str = ""
+    webpro_id: str = ""  # legacy mirror — always set to webpro_ids[0] or "" on write
+    webpro_ids: list[str] = field(default_factory=list)
     is_test: bool = False
     pinned: bool = False
     created_at: Optional[str] = None
@@ -211,6 +212,51 @@ def _migrate_rss_files(project_dict: dict) -> list:
     if old_path:
         return [{"name": "Imported", "path": old_path}]
     return []
+
+
+def _normalize_webpro_ids(values: Any) -> list[str]:
+    """Normalize a list of WebPro IDs.
+
+    - Coerces each entry to a stripped string.
+    - Drops empty entries.
+    - De-duplicates case-insensitively while preserving the **first-seen
+      casing** and insertion order.
+    - Accepts non-list input gracefully (returns []), so a caller that
+      hands in ``None`` or a single string doesn't crash.
+    """
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    seen_cf: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        cleaned = str(raw or "").strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen_cf:
+            continue
+        seen_cf.add(key)
+        out.append(cleaned)
+    return out
+
+
+def _migrate_webpro_ids(project_dict: dict) -> list[str]:
+    """Return webpro_ids list for a stored project dict.
+
+    Precedence:
+      1. ``webpro_ids`` (new canonical field, list) — normalized and returned.
+      2. ``webpro_id`` (legacy single-string field) — wrapped in a 1-item list.
+      3. Neither present — empty list.
+    """
+    raw_list = project_dict.get("webpro_ids")
+    if isinstance(raw_list, list):
+        return _normalize_webpro_ids(raw_list)
+    legacy = str(project_dict.get("webpro_id", "") or "").strip()
+    return [legacy] if legacy else []
 
 
 def parse_currency(value: Any) -> float:
@@ -396,6 +442,15 @@ class ProjectTrackerBackend:
         now = self._now_iso()
         new_project_id = int(data["next_project_id"])
 
+        # WebPro IDs: prefer the new list if the caller supplied one;
+        # otherwise fall back to the legacy single string. Normalize once
+        # and dual-write both keys so older app versions reading the file
+        # still see a sensible single-string value.
+        webpro_ids = _normalize_webpro_ids(
+            list(project.webpro_ids) if project.webpro_ids
+            else ([project.webpro_id] if project.webpro_id else [])
+        )
+
         new_job_number = project.job_number.strip()
         new_job_number_cf = new_job_number.casefold()
         for existing_project in data["projects"]:
@@ -428,7 +483,8 @@ class ProjectTrackerBackend:
             "contract_value": project.contract_value.strip(),
             "job_docs": project.job_docs.strip(),
             "div25_url": project.div25_url.strip(),
-            "webpro_id": project.webpro_id.strip(),
+            "webpro_id": webpro_ids[0] if webpro_ids else "",
+            "webpro_ids": list(webpro_ids),
             "is_test": project.is_test,
             "pinned": project.pinned,
             "rss_files": list(project.rss_files),
@@ -469,6 +525,7 @@ class ProjectTrackerBackend:
             "job_docs",
             "div25_url",
             "webpro_id",
+            "webpro_ids",
             "pinned",
             "rss_files",
         }
@@ -482,6 +539,21 @@ class ProjectTrackerBackend:
 
         if "target_completion" in updates:
             updates["target_completion"] = self._normalize_date(updates["target_completion"])
+
+        # WebPro reconciliation: callers may pass webpro_ids (canonical),
+        # webpro_id (legacy), or both. Collapse to a single normalized list
+        # and dual-write both keys so older app versions still see a value.
+        if "webpro_ids" in updates or "webpro_id" in updates:
+            raw_ids = updates.pop("webpro_ids", None)
+            raw_single = updates.pop("webpro_id", None)
+            if raw_ids is not None:
+                normalized = _normalize_webpro_ids(raw_ids)
+            elif raw_single is not None:
+                normalized = _normalize_webpro_ids([raw_single])
+            else:
+                normalized = []
+            updates["webpro_id"] = normalized[0] if normalized else ""
+            updates["webpro_ids"] = normalized
 
         data = self._load_data()
         target_project = self._find_project_dict(data, project_id)
@@ -555,6 +627,11 @@ class ProjectTrackerBackend:
         if not include_test:
             project_dicts = [p for p in project_dicts if not p.get("is_test", False)]
         if search_value:
+            def _webpro_haystack(item: dict) -> str:
+                """All WebPro IDs (new + legacy) joined for substring search."""
+                ids = _migrate_webpro_ids(item)
+                return " ".join(ids).casefold()
+
             project_dicts = [
                 item
                 for item in project_dicts
@@ -562,6 +639,7 @@ class ProjectTrackerBackend:
                 or search_value in str(item.get("job_number", "")).casefold()
                 or search_value in str(item.get("project_manager", "")).casefold()
                 or search_value in str(item.get("sales_engineer", "")).casefold()
+                or search_value in _webpro_haystack(item)
             ]
         if has_rss is not None:
             # Use the same migration-aware resolution as ``_project_from_dict``
@@ -2059,6 +2137,7 @@ class ProjectTrackerBackend:
         # otherwise raise KeyError out of list_projects() and break the entire
         # UI for the whole data file. Required string fields fall back to ""
         # and required dates fall back to None; the dataclass tolerates both.
+        webpro_ids = _migrate_webpro_ids(project_dict)
         return ProjectRecord(
             id=project_dict.get("id"),
             job_name=str(project_dict.get("job_name", "") or ""),
@@ -2079,7 +2158,10 @@ class ProjectTrackerBackend:
             contract_value=project_dict.get("contract_value", ""),
             job_docs=project_dict.get("job_docs", ""),
             div25_url=project_dict.get("div25_url", ""),
-            webpro_id=project_dict.get("webpro_id", ""),
+            # webpro_id is the legacy single-string field, kept as a mirror of
+            # webpro_ids[0] so existing callers that read .webpro_id keep working.
+            webpro_id=webpro_ids[0] if webpro_ids else "",
+            webpro_ids=webpro_ids,
             is_test=bool(project_dict.get("is_test", False)),
             pinned=bool(project_dict.get("pinned", False)),
             rss_files=_migrate_rss_files(project_dict),

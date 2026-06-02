@@ -437,6 +437,183 @@ class V185RegressionTests(TempWorkspaceTest):
         self.assertIsNone(result)
 
 
+class JTF2WebProIDsTests(TempWorkspaceTest):
+    """Backend data-compatibility behavior for JTF-2 multi-WebPro support."""
+
+    def _make_backend(self) -> ProjectTrackerBackend:
+        return ProjectTrackerBackend(self.tmp / "data.json")
+
+    # ── Read-path migration / fallback ────────────────────────────────────
+    def test_legacy_single_webpro_id_loads_as_single_item_list(self) -> None:
+        data_path = self.tmp / "data.json"
+        data_path.write_text(json.dumps({
+            "projects": [{
+                "id": 1, "job_name": "Legacy", "job_number": "L-1",
+                "webpro_id": "12345",  # legacy field only, no webpro_ids
+            }],
+            "tasks": [], "notes": [], "change_orders": [], "activity_log": [],
+            "task_notes": [], "address_book": [], "pending_deletes": [],
+            "next_project_id": 2, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
+        }), encoding="utf-8")
+
+        backend = ProjectTrackerBackend(data_path)
+        project = backend.get_project(1)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, ["12345"])
+        self.assertEqual(project.webpro_id, "12345")  # legacy mirror preserved
+
+    def test_new_webpro_ids_list_loads_directly(self) -> None:
+        data_path = self.tmp / "data.json"
+        data_path.write_text(json.dumps({
+            "projects": [{
+                "id": 1, "job_name": "Modern", "job_number": "M-1",
+                "webpro_id": "abc",
+                "webpro_ids": ["abc", "def", "xyz"],
+            }],
+            "tasks": [], "notes": [], "change_orders": [], "activity_log": [],
+            "task_notes": [], "address_book": [], "pending_deletes": [],
+            "next_project_id": 2, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
+        }), encoding="utf-8")
+
+        backend = ProjectTrackerBackend(data_path)
+        project = backend.get_project(1)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, ["abc", "def", "xyz"])
+        self.assertEqual(project.webpro_id, "abc")  # mirrors first item
+
+    def test_missing_both_webpro_fields_loads_as_empty_list(self) -> None:
+        data_path = self.tmp / "data.json"
+        data_path.write_text(json.dumps({
+            "projects": [{"id": 1, "job_name": "Bare", "job_number": "B-1"}],
+            "tasks": [], "notes": [], "change_orders": [], "activity_log": [],
+            "task_notes": [], "address_book": [], "pending_deletes": [],
+            "next_project_id": 2, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
+        }), encoding="utf-8")
+
+        backend = ProjectTrackerBackend(data_path)
+        project = backend.get_project(1)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, [])
+        self.assertEqual(project.webpro_id, "")
+
+    # ── Write-path dual-write + normalization ─────────────────────────────
+    def test_create_project_writes_both_webpro_id_and_webpro_ids(self) -> None:
+        backend = self._make_backend()
+        pid = backend.create_project(
+            ProjectRecord(
+                job_name="Dual",
+                job_number="D-1",
+                webpro_ids=["alpha", "beta"],
+            )
+        )
+
+        raw = json.loads((self.tmp / "data.json").read_text(encoding="utf-8"))
+        stored = next(p for p in raw["projects"] if int(p["id"]) == pid)
+        self.assertEqual(stored["webpro_ids"], ["alpha", "beta"])
+        self.assertEqual(stored["webpro_id"], "alpha")  # legacy mirror = first
+
+    def test_create_project_with_legacy_single_field_still_works(self) -> None:
+        backend = self._make_backend()
+        # Older callers may construct a ProjectRecord with only webpro_id.
+        pid = backend.create_project(
+            ProjectRecord(job_name="Legacy caller", job_number="L-1", webpro_id="solo")
+        )
+        project = backend.get_project(pid)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, ["solo"])
+        self.assertEqual(project.webpro_id, "solo")
+
+    def test_update_project_dedupes_case_insensitive_preserves_order(self) -> None:
+        backend = self._make_backend()
+        pid = backend.create_project(ProjectRecord(job_name="X", job_number="X-1"))
+        backend.update_project(pid, webpro_ids=["abc", "ABC", "Def", "abc", "def"])
+        project = backend.get_project(pid)
+        assert project is not None
+        # First-seen casing wins; duplicates dropped; insertion order preserved.
+        self.assertEqual(project.webpro_ids, ["abc", "Def"])
+        self.assertEqual(project.webpro_id, "abc")
+
+    def test_update_project_strips_whitespace_and_drops_empty(self) -> None:
+        backend = self._make_backend()
+        pid = backend.create_project(ProjectRecord(job_name="Y", job_number="Y-1"))
+        backend.update_project(pid, webpro_ids=["  abc  ", "", "   ", "def\t"])
+        project = backend.get_project(pid)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, ["abc", "def"])
+
+    def test_update_project_via_legacy_webpro_id_still_works(self) -> None:
+        backend = self._make_backend()
+        pid = backend.create_project(ProjectRecord(job_name="Z", job_number="Z-1"))
+        backend.update_project(pid, webpro_id="hello")
+        project = backend.get_project(pid)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, ["hello"])
+
+    def test_existing_app_reading_new_file_sees_first_id_as_webpro_id(self) -> None:
+        """Forward-compat: an older app version reading a v1.8.7+ file should
+        still see the legacy ``webpro_id`` key populated with the first ID,
+        so its single-string display code keeps working."""
+        backend = self._make_backend()
+        pid = backend.create_project(
+            ProjectRecord(job_name="Forward", job_number="F-1", webpro_ids=["first", "second"])
+        )
+        raw = json.loads((self.tmp / "data.json").read_text(encoding="utf-8"))
+        stored = next(p for p in raw["projects"] if int(p["id"]) == pid)
+        self.assertIn("webpro_id", stored)
+        self.assertEqual(stored["webpro_id"], "first")
+
+    def test_clearing_webpro_ids_removes_legacy_value_too(self) -> None:
+        backend = self._make_backend()
+        pid = backend.create_project(
+            ProjectRecord(job_name="Clearable", job_number="C-1", webpro_ids=["one", "two"])
+        )
+        backend.update_project(pid, webpro_ids=[])
+        project = backend.get_project(pid)
+        assert project is not None
+        self.assertEqual(project.webpro_ids, [])
+        self.assertEqual(project.webpro_id, "")
+
+    # ── Search inclusion ──────────────────────────────────────────────────
+    def test_list_projects_search_matches_against_any_webpro_id(self) -> None:
+        backend = self._make_backend()
+        backend.create_project(
+            ProjectRecord(job_name="Searchable", job_number="S-1",
+                          webpro_ids=["needle-001", "decoy"])
+        )
+        backend.create_project(ProjectRecord(job_name="Other", job_number="O-1"))
+
+        matches = backend.list_projects(search_text="needle")
+        self.assertEqual([p.job_name for p in matches], ["Searchable"])
+
+        matches_decoy = backend.list_projects(search_text="decoy")
+        self.assertEqual([p.job_name for p in matches_decoy], ["Searchable"])
+
+    def test_list_projects_search_also_matches_legacy_webpro_id_only(self) -> None:
+        """If a stored record carries only the legacy webpro_id field,
+        search should still find it via the migration-aware haystack."""
+        data_path = self.tmp / "data.json"
+        data_path.write_text(json.dumps({
+            "projects": [{
+                "id": 1, "job_name": "Legacy Search", "job_number": "LS-1",
+                "webpro_id": "only-legacy",
+            }],
+            "tasks": [], "notes": [], "change_orders": [], "activity_log": [],
+            "task_notes": [], "address_book": [], "pending_deletes": [],
+            "next_project_id": 2, "next_task_id": 1, "next_note_id": 1,
+            "next_co_id": 1, "next_activity_id": 1, "next_task_note_id": 1,
+            "next_address_id": 1, "next_pending_id": 1,
+        }), encoding="utf-8")
+        backend = ProjectTrackerBackend(data_path)
+        matches = backend.list_projects(search_text="only-legacy")
+        self.assertEqual([p.job_name for p in matches], ["Legacy Search"])
+
+
 class JTF1RSSFilterTests(TempWorkspaceTest):
     """Backend filter behavior for the JTF-1 RSS filter dropdown."""
 
